@@ -1,0 +1,18 @@
+# MyLogger42 single-service compose file. The default driver is SQLite;
+# the data volume persists the database across restarts. Override env
+# vars in .env to switch to Postgres.
+services:
+  mylogger42:
+    build: .
+    image: mylogger42:latest
+    container_name: mylogger42
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - mylogger42-data:/app/data
+
+volumes:
+  mylogger42-data:

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+bin/
+data/
+*.db
+*.db-*
+.env
+docs/
+firebase-debug.log
+.claude/
+web/node_modules/
+web/dist/

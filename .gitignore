@@ -1,0 +1,20 @@
+# Build artifacts
+bin/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Frontend
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# Local env
+.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
