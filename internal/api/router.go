@@ -108,6 +108,14 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/v1/logs/{id}", sessionAuth(http.HandlerFunc(s.handleGetByIDRoute)))
 	mux.Handle("GET /api/v1/sources", sessionAuth(http.HandlerFunc(s.handleSources)))
 
+	// Auth surface. login is public; logout + /me require a session.
+	// (logout is also wrapped in requireSameOrigin per the spec's CSRF
+	// posture — it's a state-mutating cookie-authenticated POST.)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.Handle("POST /api/v1/auth/logout",
+		sessionAuth(requireSameOrigin(http.HandlerFunc(s.handleLogout))))
+	mux.Handle("GET /api/v1/auth/me", sessionAuth(http.HandlerFunc(s.handleMe)))
+
 	// Public — health check stays open.
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
