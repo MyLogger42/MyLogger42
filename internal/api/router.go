@@ -164,13 +164,19 @@ func (s *Server) handleGetByIDRoute(w http.ResponseWriter, r *http.Request) {
 //
 // 200 when the store is reachable, 503 when not. Uptime is reported in
 // Go duration format (e.g. "4h32m"), trimmed of subsecond precision.
+//
+// v2 also reports the project count — handy for sanity-checking that a
+// freshly-restarted server saw the expected schema migration. The count
+// is best-effort: a Projects.Count failure doesn't downgrade the
+// response to 503 (the storage Ping above already covers that), it
+// just falls back to 0.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
 	uptime := time.Since(s.startedAt).Round(time.Second).String()
 	if err := s.store.Ping(ctx); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status":  "unhealthy",
 			"storage": s.driver,
 			"uptime":  uptime,
@@ -178,10 +184,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":  "ok",
-		"storage": s.driver,
-		"uptime":  uptime,
+
+	projectCount := 0
+	if s.projects != nil {
+		if n, err := s.projects.Count(ctx); err == nil {
+			projectCount = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"storage":  s.driver,
+		"uptime":   uptime,
+		"projects": projectCount,
 	})
 }
 
