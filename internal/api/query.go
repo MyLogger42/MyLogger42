@@ -22,7 +22,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	items, total, err := s.store.Query(r.Context(), filter)
+	// TODO(v2 Phase 8): resolve projectID from required ?project=<slug> param.
+	items, total, err := s.store.Query(r.Context(), "", filter)
 	if err != nil {
 		s.logger.Printf("query: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -42,7 +43,8 @@ func (s *Server) handleGetByID(w http.ResponseWriter, r *http.Request, id string
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	entry, err := s.store.Get(r.Context(), id)
+	// TODO(v2 Phase 8): resolve projectID from required ?project=<slug> param.
+	entry, err := s.store.Get(r.Context(), "", id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -57,7 +59,8 @@ func (s *Server) handleGetByID(w http.ResponseWriter, r *http.Request, id string
 
 // handleSources implements GET /api/v1/sources.
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
-	srcs, err := s.store.Sources(r.Context())
+	// TODO(v2 Phase 10): resolve projectID from required ?project=<slug> param.
+	srcs, err := s.store.Sources(r.Context(), "")
 	if err != nil {
 		s.logger.Printf("sources: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")

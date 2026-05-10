@@ -29,16 +29,21 @@ var (
 // LogStore is the persistence-layer port consumed by the API and worker
 // layers. Implementations must be safe for concurrent use.
 //
-// In v2 every method gains explicit project scoping. The v1 signatures
-// will be retired once all callers route through *Stores; for now the
-// interface lives here and impls satisfy it directly.
+// All read methods are project-scoped: the projectID is the FIRST data
+// argument. Insert/InsertBatch read the project ID from the entry's
+// ProjectID field — both forms keep project scoping at the boundary so a
+// caller that forgot to plumb a project can't accidentally bypass it.
+//
+// DeleteOlderThanForProject is the v2 replacement for v1's global
+// DeleteOlderThan. The retention worker iterates projects and calls it
+// per-project so per-project retention windows can apply.
 type LogStore interface {
 	Insert(ctx context.Context, entry domain.LogEntry) error
 	InsertBatch(ctx context.Context, entries []domain.LogEntry) error
-	Get(ctx context.Context, id string) (*domain.LogEntry, error)
-	Query(ctx context.Context, filter domain.QueryFilter) ([]domain.LogEntry, int, error)
-	Sources(ctx context.Context) ([]domain.Source, error)
-	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+	Get(ctx context.Context, projectID, id string) (*domain.LogEntry, error)
+	Query(ctx context.Context, projectID string, filter domain.QueryFilter) ([]domain.LogEntry, int, error)
+	Sources(ctx context.Context, projectID string) ([]domain.Source, error)
+	DeleteOlderThanForProject(ctx context.Context, projectID string, cutoff time.Time) (int64, error)
 	Ping(ctx context.Context) error
 	Close() error
 }

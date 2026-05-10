@@ -81,10 +81,10 @@ func (s *pgStore) Insert(ctx context.Context, e domain.LogEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode metadata: %w", err)
 	}
-	const q = `INSERT INTO log_entries (id, service, level, message, timestamp, received_at, metadata)
-	           VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	const q = `INSERT INTO log_entries (id, project_id, service, level, message, timestamp, received_at, metadata)
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	_, err = s.pool.Exec(ctx, q,
-		e.ID, e.Service, string(e.Level), e.Message,
+		e.ID, e.ProjectID, e.Service, string(e.Level), e.Message,
 		e.Timestamp.UTC(), e.ReceivedAt.UTC(), meta,
 	)
 	return err
@@ -103,14 +103,14 @@ func (s *pgStore) InsertBatch(ctx context.Context, entries []domain.LogEntry) er
 	// pgx CopyFrom would be faster but uses a binary protocol that needs
 	// jsonb encoded as bytes; the per-row insert with prepared statement
 	// is plenty for batch sizes <=500 and keeps the path simple.
-	const q = `INSERT INTO log_entries (id, service, level, message, timestamp, received_at, metadata)
-	           VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	const q = `INSERT INTO log_entries (id, project_id, service, level, message, timestamp, received_at, metadata)
+	           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	for _, e := range entries {
 		meta, err := json.Marshal(e.Metadata)
 		if err != nil {
 			return fmt.Errorf("encode metadata: %w", err)
 		}
-		if _, err := tx.Exec(ctx, q, e.ID, e.Service, string(e.Level), e.Message,
+		if _, err := tx.Exec(ctx, q, e.ID, e.ProjectID, e.Service, string(e.Level), e.Message,
 			e.Timestamp.UTC(), e.ReceivedAt.UTC(), meta); err != nil {
 			return err
 		}
@@ -118,10 +118,10 @@ func (s *pgStore) InsertBatch(ctx context.Context, entries []domain.LogEntry) er
 	return tx.Commit(ctx)
 }
 
-func (s *pgStore) Get(ctx context.Context, id string) (*domain.LogEntry, error) {
-	const q = `SELECT id, service, level, message, timestamp, received_at, metadata
-	           FROM log_entries WHERE id = $1`
-	row := s.pool.QueryRow(ctx, q, id)
+func (s *pgStore) Get(ctx context.Context, projectID, id string) (*domain.LogEntry, error) {
+	const q = `SELECT id, project_id, service, level, message, timestamp, received_at, metadata
+	           FROM log_entries WHERE project_id = $1 AND id = $2`
+	row := s.pool.QueryRow(ctx, q, projectID, id)
 	e, err := scanPgRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -144,7 +144,7 @@ func scanPgRow(r pgScanner) (*domain.LogEntry, error) {
 		received time.Time
 		meta     []byte
 	)
-	if err := r.Scan(&e.ID, &e.Service, &level, &e.Message, &ts, &received, &meta); err != nil {
+	if err := r.Scan(&e.ID, &e.ProjectID, &e.Service, &level, &e.Message, &ts, &received, &meta); err != nil {
 		return nil, err
 	}
 	e.Level = domain.LogLevel(level)
@@ -159,8 +159,8 @@ func scanPgRow(r pgScanner) (*domain.LogEntry, error) {
 	return &e, nil
 }
 
-func (s *pgStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain.LogEntry, int, error) {
-	where, args := buildWherePg(f)
+func (s *pgStore) Query(ctx context.Context, projectID string, f domain.QueryFilter) ([]domain.LogEntry, int, error) {
+	where, args := buildWherePg(projectID, f)
 
 	var total int
 	countSQL := "SELECT COUNT(*) FROM log_entries" + where
@@ -183,7 +183,7 @@ func (s *pgStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain.Log
 	limPlaceholder := fmt.Sprintf("$%d", len(args)+1)
 	offPlaceholder := fmt.Sprintf("$%d", len(args)+2)
 	listSQL := fmt.Sprintf(
-		"SELECT id, service, level, message, timestamp, received_at, metadata FROM log_entries%s ORDER BY timestamp %s, id %s LIMIT %s OFFSET %s",
+		"SELECT id, project_id, service, level, message, timestamp, received_at, metadata FROM log_entries%s ORDER BY timestamp %s, id %s LIMIT %s OFFSET %s",
 		where, order, order, limPlaceholder, offPlaceholder,
 	)
 	rows, err := s.pool.Query(ctx, listSQL, append(append([]any{}, args...), limit, offset)...)
@@ -206,14 +206,17 @@ func (s *pgStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain.Log
 	return out, total, nil
 }
 
-// buildWherePg uses Postgres's $N placeholders.
-func buildWherePg(f domain.QueryFilter) (string, []any) {
-	var clauses []string
+// buildWherePg uses Postgres's $N placeholders. project_id is the leading
+// predicate so the composite (project_id, timestamp DESC) index satisfies
+// queries via index prefix.
+func buildWherePg(projectID string, f domain.QueryFilter) (string, []any) {
+	clauses := []string{}
 	var args []any
 	add := func(clause string, val any) {
 		args = append(args, val)
 		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
 	}
+	add("project_id = $%d", projectID)
 	if f.Service != "" {
 		add("service = $%d", f.Service)
 	}
@@ -229,16 +232,14 @@ func buildWherePg(f domain.QueryFilter) (string, []any) {
 	if f.Search != "" {
 		add("message ILIKE $%d", "%"+f.Search+"%")
 	}
-	if len(clauses) == 0 {
-		return "", args
-	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
-func (s *pgStore) Sources(ctx context.Context) ([]domain.Source, error) {
+func (s *pgStore) Sources(ctx context.Context, projectID string) ([]domain.Source, error) {
 	const q = `SELECT service, MIN(timestamp), MAX(timestamp), COUNT(*)
-	           FROM log_entries GROUP BY service ORDER BY service ASC`
-	rows, err := s.pool.Query(ctx, q)
+	           FROM log_entries WHERE project_id = $1
+	           GROUP BY service ORDER BY service ASC`
+	rows, err := s.pool.Query(ctx, q, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +258,9 @@ func (s *pgStore) Sources(ctx context.Context) ([]domain.Source, error) {
 	return out, rows.Err()
 }
 
-func (s *pgStore) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	const q = `DELETE FROM log_entries WHERE received_at < $1`
-	tag, err := s.pool.Exec(ctx, q, cutoff.UTC())
+func (s *pgStore) DeleteOlderThanForProject(ctx context.Context, projectID string, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM log_entries WHERE project_id = $1 AND received_at < $2`
+	tag, err := s.pool.Exec(ctx, q, projectID, cutoff.UTC())
 	if err != nil {
 		return 0, err
 	}

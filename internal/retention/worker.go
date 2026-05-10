@@ -66,13 +66,12 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) sweep(ctx context.Context) {
-	cutoff := w.now().Add(-time.Duration(w.retentionDays) * 24 * time.Hour)
-	deleted, err := w.store.DeleteOlderThan(ctx, cutoff)
-	if err != nil {
-		w.logger.Printf("retention: sweep failed: %v", err)
-		return
-	}
-	if deleted > 0 {
-		w.logger.Printf("retention: deleted %d entries older than %s", deleted, cutoff.Format(time.RFC3339))
-	}
+	// TODO(v2 Phase 11): iterate ProjectStore.List(includeArchived=true),
+	// compute effectiveRetention(p) per project, and call
+	// DeleteOlderThanForProject for each. The current body is intentionally
+	// a no-op-with-warning so callers can wire up the worker without a
+	// project store yet.
+	w.logger.Printf("retention: sweep stubbed (Phase 11 will iterate projects); cutoff would be %s",
+		w.now().Add(-time.Duration(w.retentionDays)*24*time.Hour).Format(time.RFC3339))
+	_ = ctx
 }

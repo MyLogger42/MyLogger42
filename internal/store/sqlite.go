@@ -107,10 +107,10 @@ func (s *sqliteStore) Insert(ctx context.Context, entry domain.LogEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode metadata: %w", err)
 	}
-	const q = `INSERT INTO log_entries (id, service, level, message, timestamp, received_at, metadata)
-	           VALUES (?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO log_entries (id, project_id, service, level, message, timestamp, received_at, metadata)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = s.db.ExecContext(ctx, q,
-		entry.ID, entry.Service, string(entry.Level), entry.Message,
+		entry.ID, entry.ProjectID, entry.Service, string(entry.Level), entry.Message,
 		entry.Timestamp.UTC(), entry.ReceivedAt.UTC(), string(meta),
 	)
 	return err
@@ -126,8 +126,8 @@ func (s *sqliteStore) InsertBatch(ctx context.Context, entries []domain.LogEntry
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const q = `INSERT INTO log_entries (id, service, level, message, timestamp, received_at, metadata)
-	           VALUES (?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO log_entries (id, project_id, service, level, message, timestamp, received_at, metadata)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	stmt, err := tx.PrepareContext(ctx, q)
 	if err != nil {
 		return err
@@ -138,7 +138,7 @@ func (s *sqliteStore) InsertBatch(ctx context.Context, entries []domain.LogEntry
 		if err != nil {
 			return fmt.Errorf("encode metadata: %w", err)
 		}
-		if _, err := stmt.ExecContext(ctx, e.ID, e.Service, string(e.Level), e.Message,
+		if _, err := stmt.ExecContext(ctx, e.ID, e.ProjectID, e.Service, string(e.Level), e.Message,
 			e.Timestamp.UTC(), e.ReceivedAt.UTC(), string(meta)); err != nil {
 			return err
 		}
@@ -146,10 +146,10 @@ func (s *sqliteStore) InsertBatch(ctx context.Context, entries []domain.LogEntry
 	return tx.Commit()
 }
 
-func (s *sqliteStore) Get(ctx context.Context, id string) (*domain.LogEntry, error) {
-	const q = `SELECT id, service, level, message, timestamp, received_at, metadata
-	           FROM log_entries WHERE id = ?`
-	row := s.db.QueryRowContext(ctx, q, id)
+func (s *sqliteStore) Get(ctx context.Context, projectID, id string) (*domain.LogEntry, error) {
+	const q = `SELECT id, project_id, service, level, message, timestamp, received_at, metadata
+	           FROM log_entries WHERE project_id = ? AND id = ?`
+	row := s.db.QueryRowContext(ctx, q, projectID, id)
 	e, err := scanRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -174,7 +174,7 @@ func scanRow(r rowScanner) (*domain.LogEntry, error) {
 		received time.Time
 		meta     string
 	)
-	if err := r.Scan(&e.ID, &e.Service, &level, &e.Message, &ts, &received, &meta); err != nil {
+	if err := r.Scan(&e.ID, &e.ProjectID, &e.Service, &level, &e.Message, &ts, &received, &meta); err != nil {
 		return nil, err
 	}
 	e.Level = domain.LogLevel(level)
@@ -191,8 +191,11 @@ func scanRow(r rowScanner) (*domain.LogEntry, error) {
 	return &e, nil
 }
 
-func (s *sqliteStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain.LogEntry, int, error) {
-	where, args := buildWhereSQLite(f)
+func (s *sqliteStore) Query(ctx context.Context, projectID string, f domain.QueryFilter) ([]domain.LogEntry, int, error) {
+	// project_id always leads the WHERE clause — combined with the
+	// composite (project_id, timestamp DESC) index, this is the v2 hot
+	// path.
+	where, args := buildWhereSQLite(projectID, f)
 
 	// Count first so the API can return paginated metadata. We reuse the
 	// same WHERE clause for consistency.
@@ -215,7 +218,7 @@ func (s *sqliteStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain
 		offset = 0
 	}
 	listSQL := fmt.Sprintf(
-		"SELECT id, service, level, message, timestamp, received_at, metadata FROM log_entries%s ORDER BY timestamp %s, id %s LIMIT ? OFFSET ?",
+		"SELECT id, project_id, service, level, message, timestamp, received_at, metadata FROM log_entries%s ORDER BY timestamp %s, id %s LIMIT ? OFFSET ?",
 		where, order, order,
 	)
 	rows, err := s.db.QueryContext(ctx, listSQL, append(append([]any{}, args...), limit, offset)...)
@@ -238,11 +241,13 @@ func (s *sqliteStore) Query(ctx context.Context, f domain.QueryFilter) ([]domain
 	return out, total, nil
 }
 
-// buildWhereSQLite constructs the WHERE clause and ordered args for the
-// SQLite "?" placeholder dialect.
-func buildWhereSQLite(f domain.QueryFilter) (string, []any) {
-	var clauses []string
-	var args []any
+// buildWhereSQLite constructs the WHERE clause and ordered args. The
+// project_id predicate is always present (it's the v2 scoping anchor)
+// and leads the clause list so the composite (project_id, timestamp DESC)
+// index can satisfy queries via index prefix.
+func buildWhereSQLite(projectID string, f domain.QueryFilter) (string, []any) {
+	clauses := []string{"project_id = ?"}
+	args := []any{projectID}
 	if f.Service != "" {
 		clauses = append(clauses, "service = ?")
 		args = append(args, f.Service)
@@ -263,16 +268,14 @@ func buildWhereSQLite(f domain.QueryFilter) (string, []any) {
 		clauses = append(clauses, "message LIKE ?")
 		args = append(args, "%"+f.Search+"%")
 	}
-	if len(clauses) == 0 {
-		return "", args
-	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
-func (s *sqliteStore) Sources(ctx context.Context) ([]domain.Source, error) {
+func (s *sqliteStore) Sources(ctx context.Context, projectID string) ([]domain.Source, error) {
 	const q = `SELECT service, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen, COUNT(*) AS total
-	           FROM log_entries GROUP BY service ORDER BY service ASC`
-	rows, err := s.db.QueryContext(ctx, q)
+	           FROM log_entries WHERE project_id = ?
+	           GROUP BY service ORDER BY service ASC`
+	rows, err := s.db.QueryContext(ctx, q, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -329,9 +332,9 @@ func parseSQLiteTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognised time format: %s", s)
 }
 
-func (s *sqliteStore) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	const q = `DELETE FROM log_entries WHERE received_at < ?`
-	res, err := s.db.ExecContext(ctx, q, cutoff.UTC())
+func (s *sqliteStore) DeleteOlderThanForProject(ctx context.Context, projectID string, cutoff time.Time) (int64, error) {
+	const q = `DELETE FROM log_entries WHERE project_id = ? AND received_at < ?`
+	res, err := s.db.ExecContext(ctx, q, projectID, cutoff.UTC())
 	if err != nil {
 		return 0, err
 	}
