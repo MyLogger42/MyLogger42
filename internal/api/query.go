@@ -11,19 +11,56 @@ import (
 	"github.com/silverbaq/mylogger42/internal/store"
 )
 
+// resolveProjectFromQuery is the shared lookup helper for read
+// endpoints. The v2 spec requires every list/read endpoint to scope by
+// project via a ?project=<slug> query param — missing or unknown slugs
+// produce 400 / 404 respectively. Slug case-sensitivity follows the
+// store: uppercase slugs simply won't match, returning 404.
+//
+// On success, the caller has a Project they can scope the store call to.
+// Errors are written directly to w; the caller checks the bool return.
+func (s *Server) resolveProjectFromQuery(w http.ResponseWriter, r *http.Request) (*domain.Project, bool) {
+	slug := strings.TrimSpace(r.URL.Query().Get("project"))
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, "project is required (set ?project=<slug>)")
+		return nil, false
+	}
+	if err := domain.ValidateSlug(slug); err != nil {
+		// Malformed slugs are 400, not 404 — a 404 would be misleading
+		// since "no such slug shape" isn't the same as "no project at
+		// that slug."
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	project, err := s.projects.GetBySlug(r.Context(), slug)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "project not found")
+		return nil, false
+	}
+	if err != nil {
+		s.logger.Printf("project lookup: %v", err)
+		writeError(w, http.StatusInternalServerError, "storage error")
+		return nil, false
+	}
+	return project, true
+}
+
 // handleQuery implements GET /api/v1/logs.
 //
-// Path-vs-list dispatch is handled by the router (logsHandler); this
-// method assumes the caller already verified the request is a list query
-// (no trailing :id segment).
+// Required query params: project=<slug>. All other QueryFilter params
+// (service, level, from, to, search, limit, offset, sort) are optional
+// and parsed by parseQueryFilter.
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	project, ok := s.resolveProjectFromQuery(w, r)
+	if !ok {
+		return
+	}
 	filter, err := parseQueryFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// TODO(v2 Phase 8): resolve projectID from required ?project=<slug> param.
-	items, total, err := s.store.Query(r.Context(), "", filter)
+	items, total, err := s.store.Query(r.Context(), project.ID, filter)
 	if err != nil {
 		s.logger.Printf("query: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")
@@ -37,14 +74,23 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetByID implements GET /api/v1/logs/:id.
+// handleGetByID implements GET /api/v1/logs/{id}.
+//
+// Required query param: project=<slug>. An entry that exists but
+// belongs to a different project returns 404 — matching the v2 spec's
+// forward-compatible isolation rule (multi-user v3 will gate read
+// access by project membership; v2's single admin always sees their
+// own project's entries).
 func (s *Server) handleGetByID(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// TODO(v2 Phase 8): resolve projectID from required ?project=<slug> param.
-	entry, err := s.store.Get(r.Context(), "", id)
+	project, ok := s.resolveProjectFromQuery(w, r)
+	if !ok {
+		return
+	}
+	entry, err := s.store.Get(r.Context(), project.ID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -58,9 +104,15 @@ func (s *Server) handleGetByID(w http.ResponseWriter, r *http.Request, id string
 }
 
 // handleSources implements GET /api/v1/sources.
+//
+// Required query param: project=<slug>. The response is the
+// derived-projection list of services scoped to that project.
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
-	// TODO(v2 Phase 10): resolve projectID from required ?project=<slug> param.
-	srcs, err := s.store.Sources(r.Context(), "")
+	project, ok := s.resolveProjectFromQuery(w, r)
+	if !ok {
+		return
+	}
+	srcs, err := s.store.Sources(r.Context(), project.ID)
 	if err != nil {
 		s.logger.Printf("sources: %v", err)
 		writeError(w, http.StatusInternalServerError, "storage error")

@@ -73,14 +73,17 @@ func main() {
 	}
 
 	srv := api.NewServer(api.Config{
-		Store:    stores.Logs,
-		Keys:     stores.Keys,
-		Projects: stores.Projects,
-		Hub:      hub,
-		Logger:   logger,
-		Driver:   cfg.DBDriver,
-		StaticFS: staticFS,
-		Pepper:   cfg.KeyPepper,
+		Store:        stores.Logs,
+		Keys:         stores.Keys,
+		Projects:     stores.Projects,
+		Users:        stores.Users,
+		Hub:          hub,
+		Logger:       logger,
+		Driver:       cfg.DBDriver,
+		StaticFS:     staticFS,
+		Pepper:       cfg.KeyPepper,
+		Signer:       auth.NewSessionSigner(cfg.SessionSecret),
+		CookieSecure: api.CookieSecureResolver(cfg.TrustForwardedProto),
 	})
 
 	// Drains the in-memory last_used_at updates accumulated by ingest

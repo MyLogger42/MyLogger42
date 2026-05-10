@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/silverbaq/mylogger42/internal/auth"
 	"github.com/silverbaq/mylogger42/internal/store"
 	"github.com/silverbaq/mylogger42/internal/ws"
 )
@@ -15,16 +16,19 @@ import (
 // Server is the API layer. It owns no goroutines of its own; lifecycle
 // (hub.Run, retention worker, last_used flusher) is managed by main.go.
 type Server struct {
-	store     store.LogStore
-	keys      store.KeyStore
-	projects  store.ProjectStore
-	hub       *ws.Hub
-	logger    *log.Logger
-	startedAt time.Time
-	driver    string
-	staticFS  fs.FS // optional embedded SPA assets
-	pepper    []byte
-	usage     *lastUsedThrottle
+	store        store.LogStore
+	keys         store.KeyStore
+	projects     store.ProjectStore
+	users        store.UserStore
+	hub          *ws.Hub
+	logger       *log.Logger
+	startedAt    time.Time
+	driver       string
+	staticFS     fs.FS // optional embedded SPA assets
+	pepper       []byte
+	usage        *lastUsedThrottle
+	signer       *auth.SessionSigner
+	cookieSecure func(*http.Request) bool
 }
 
 // Config bundles the dependencies required to build a Server.
@@ -32,15 +36,21 @@ type Server struct {
 // The v1 APIKey field is gone — ingest auth is per-project in v2 via
 // the requireProjectKey middleware, which needs the keystore + project
 // store + HMAC pepper to verify a presented X-API-Key.
+//
+// Read endpoints and admin handlers (Phase 9) are gated behind
+// requireSession, which uses Signer + CookieSecure.
 type Config struct {
-	Store    store.LogStore
-	Keys     store.KeyStore
-	Projects store.ProjectStore
-	Hub      *ws.Hub
-	Logger   *log.Logger
-	Driver   string
-	StaticFS fs.FS
-	Pepper   []byte
+	Store        store.LogStore
+	Keys         store.KeyStore
+	Projects     store.ProjectStore
+	Users        store.UserStore
+	Hub          *ws.Hub
+	Logger       *log.Logger
+	Driver       string
+	StaticFS     fs.FS
+	Pepper       []byte
+	Signer       *auth.SessionSigner
+	CookieSecure func(*http.Request) bool
 }
 
 // NewServer wires up handler dependencies. It does not start anything.
@@ -49,17 +59,26 @@ func NewServer(cfg Config) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
+	cookieSecure := cfg.CookieSecure
+	if cookieSecure == nil {
+		// Conservative default: never mark Secure unless an explicit
+		// resolver opts in. Local dev (http://localhost) just works.
+		cookieSecure = func(*http.Request) bool { return false }
+	}
 	return &Server{
-		store:     cfg.Store,
-		keys:      cfg.Keys,
-		projects:  cfg.Projects,
-		hub:       cfg.Hub,
-		logger:    logger,
-		startedAt: time.Now(),
-		driver:    cfg.Driver,
-		staticFS:  cfg.StaticFS,
-		pepper:    cfg.Pepper,
-		usage:     newLastUsedThrottle(cfg.Keys),
+		store:        cfg.Store,
+		keys:         cfg.Keys,
+		projects:     cfg.Projects,
+		users:        cfg.Users,
+		hub:          cfg.Hub,
+		logger:       logger,
+		startedAt:    time.Now(),
+		driver:       cfg.Driver,
+		staticFS:     cfg.StaticFS,
+		pepper:       cfg.Pepper,
+		usage:        newLastUsedThrottle(cfg.Keys),
+		signer:       cfg.Signer,
+		cookieSecure: cookieSecure,
 	}
 }
 
@@ -81,10 +100,15 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/v1/logs", ingestAuth(http.HandlerFunc(s.handleIngestSingle)))
 	mux.Handle("POST /api/v1/logs/batch", ingestAuth(http.HandlerFunc(s.handleIngestBatch)))
 
-	// Read endpoints (no auth per spec for now — Phase 8 adds session).
-	mux.HandleFunc("GET /api/v1/logs", s.handleQuery)
-	mux.HandleFunc("GET /api/v1/logs/{id}", s.handleGetByIDRoute)
-	mux.HandleFunc("GET /api/v1/sources", s.handleSources)
+	// Read endpoints — gated behind the session middleware (admin login
+	// required). Each handler resolves a required ?project=<slug> param
+	// and scopes the underlying store query to that project.
+	sessionAuth := requireSession(s.signer, s.cookieSecure)
+	mux.Handle("GET /api/v1/logs", sessionAuth(http.HandlerFunc(s.handleQuery)))
+	mux.Handle("GET /api/v1/logs/{id}", sessionAuth(http.HandlerFunc(s.handleGetByIDRoute)))
+	mux.Handle("GET /api/v1/sources", sessionAuth(http.HandlerFunc(s.handleSources)))
+
+	// Public — health check stays open.
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
 	// WebSocket live-tail.
@@ -97,8 +121,10 @@ func (s *Server) Routes() http.Handler {
 	}
 
 	// Outermost middleware: CORS first (so OPTIONS short-circuits before
-	// logging), then access logging.
-	return withCORS(withLogging(s.logger, mux))
+	// logging), then access logging. The credential-aware CORS variant
+	// is required because read/admin endpoints rely on the session
+	// cookie — `Allow-Origin: *` + credentials is forbidden.
+	return withCORSCredentials(withLogging(s.logger, mux))
 }
 
 // handleGetByIDRoute is the wrapper that pulls the path param off the
