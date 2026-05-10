@@ -63,9 +63,15 @@ func OpenSQLite(ctx context.Context, dsn string) (LogStore, error) {
 	return &sqliteStore{db: db}, nil
 }
 
-// runMigrations is shared by sqlite/postgres. We don't track applied
-// migrations in a separate table because every script uses IF NOT EXISTS;
-// re-running on startup is safe and idempotent.
+// runMigrations applies the SQLite migration scripts in lexicographic
+// order. We don't track applied migrations in a separate table because
+// every script uses IF NOT EXISTS / ADD COLUMN guards, so re-running on
+// startup is safe and idempotent.
+//
+// Each filename is also looked up in sqliteHooks; if a Go-side hook is
+// registered, it runs BEFORE that file's SQL exec. Hooks are used for
+// preconditions that can't be expressed in portable SQL — see
+// migration_hooks.go.
 func runMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) error {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
@@ -80,6 +86,11 @@ func runMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) erro
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		if hook, ok := sqliteHooks[n]; ok {
+			if err := hook(ctx, db); err != nil {
+				return fmt.Errorf("preflight %s: %w", n, err)
+			}
+		}
 		body, err := fs.ReadFile(fsys, filepath.ToSlash(filepath.Join(dir, n)))
 		if err != nil {
 			return fmt.Errorf("read %s: %w", n, err)

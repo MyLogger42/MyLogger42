@@ -44,6 +44,8 @@ func OpenPostgres(ctx context.Context, dsn string) (LogStore, error) {
 	return &pgStore{pool: pool}, nil
 }
 
+// runPgMigrations is the Postgres equivalent of runMigrations — same
+// hook-then-exec contract, see migration_hooks.go.
 func runPgMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, dir string) error {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
@@ -58,6 +60,11 @@ func runPgMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, dir st
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		if hook, ok := postgresHooks[n]; ok {
+			if err := hook(ctx, pool); err != nil {
+				return fmt.Errorf("preflight %s: %w", n, err)
+			}
+		}
 		body, err := fs.ReadFile(fsys, filepath.ToSlash(filepath.Join(dir, n)))
 		if err != nil {
 			return fmt.Errorf("read %s: %w", n, err)
