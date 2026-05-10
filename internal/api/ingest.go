@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -15,21 +16,37 @@ const maxBatchSize = 500
 
 // handleIngestSingle implements POST /api/v1/logs.
 //
-// Auth is enforced by the requireAPIKey middleware before this handler
-// runs, so we focus on shape validation, default-application and store
-// write here.
+// Auth (project resolution + archived check) is enforced by
+// requireProjectKey middleware before this handler runs; we pull the
+// resolved project off the request context.
+//
+// Decoding goes through domain.DecodeIngestPayloadStrict so a payload
+// trying to set a top-level "project" field is rejected with 400 — the
+// project comes from the authenticating key, never the body.
 func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
-	var payload domain.IngestPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+	project, ok := ProjectFromContext(r.Context())
+	if !ok {
+		// Defense in depth — should be impossible if the route is wired
+		// behind requireProjectKey.
+		writeError(w, http.StatusInternalServerError, "project context missing")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20)) // 1 MiB cap
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	payload, err := domain.DecodeIngestPayloadStrict(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid payload: "+err.Error())
 		return
 	}
 	if err := payload.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// TODO(v2): projectID will be supplied by requireProjectKey middleware.
-	entry, err := payload.ToEntry(uuid.NewString(), "", time.Now().UTC())
+	entry, err := payload.ToEntry(uuid.NewString(), project.ID, time.Now().UTC())
 	if err != nil {
 		// Should not happen — Validate already exercised the same parse.
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -57,14 +74,27 @@ type batchError struct {
 
 // handleIngestBatch implements POST /api/v1/logs/batch.
 //
-// The endpoint is fully atomic: either every supplied entry is written
-// or none are. Validation runs across the entire array up-front and any
-// failure produces a 400 with the per-index error list — no DB writes
-// happen in that case.
+// Atomic per the v2 spec: validate all entries up front; any failure
+// aborts the whole batch with a 400 enumerating per-index errors. No
+// DB write happens unless every entry validates.
+//
+// Strict decoding rejects any entry that tries to carry a top-level
+// "project" field — the project comes from the authenticating key.
 func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
-	var payloads []domain.IngestPayload
-	if err := json.NewDecoder(r.Body).Decode(&payloads); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+	project, ok := ProjectFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "project context missing")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20)) // 4 MiB cap for batch
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	payloads, err := domain.DecodeIngestBatchStrict(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid batch: "+err.Error())
 		return
 	}
 	if len(payloads) == 0 {
@@ -87,8 +117,7 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Allocate a UUID per entry up-front so we can return ids on
 		// success without an extra pass.
-		// TODO(v2): projectID will be supplied by requireProjectKey middleware.
-		entry, err := p.ToEntry(uuid.NewString(), "", now)
+		entry, err := p.ToEntry(uuid.NewString(), project.ID, now)
 		if err != nil {
 			errs = append(errs, batchError{Index: i, Error: err.Error()})
 			continue
@@ -129,4 +158,3 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
-

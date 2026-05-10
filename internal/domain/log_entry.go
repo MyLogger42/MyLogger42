@@ -187,6 +187,25 @@ func DecodeIngestPayloadStrict(raw []byte) (IngestPayload, error) {
 	return p, nil
 }
 
+// DecodeIngestBatchStrict is the array-shaped sibling of
+// DecodeIngestPayloadStrict. It enforces the "no unknown fields" rule
+// per-element so a single batch entry trying to carry a `project` field
+// rejects the whole batch — consistent with the v2 spec's atomicity
+// rule (one bad entry fails the whole batch).
+func DecodeIngestBatchStrict(raw []byte) ([]IngestPayload, error) {
+	var ps []IngestPayload
+	// Outer parse is non-strict (we want a clean "must be array" error
+	// rather than an unknown-fields error). DisallowUnknownFields here
+	// applies to the slice element struct because Go's json package
+	// propagates the flag into the slice elements.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&ps); err != nil {
+		return nil, err
+	}
+	return ps, nil
+}
+
 // Source is a read-only projection over the distinct services. It is not
 // stored as its own table — it's computed via GROUP BY on log_entries.
 type Source struct {

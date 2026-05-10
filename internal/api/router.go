@@ -13,27 +13,34 @@ import (
 )
 
 // Server is the API layer. It owns no goroutines of its own; lifecycle
-// (hub.Run, retention worker) is managed by main.go.
+// (hub.Run, retention worker, last_used flusher) is managed by main.go.
 type Server struct {
 	store     store.LogStore
+	keys      store.KeyStore
+	projects  store.ProjectStore
 	hub       *ws.Hub
 	logger    *log.Logger
 	startedAt time.Time
 	driver    string
 	staticFS  fs.FS // optional embedded SPA assets
+	pepper    []byte
+	usage     *lastUsedThrottle
 }
 
 // Config bundles the dependencies required to build a Server.
 //
-// The v1 APIKey field is gone — ingest auth is per-project in v2 and
-// will be wired in Phase 6 via requireProjectKey middleware that talks
-// to the KeyStore.
+// The v1 APIKey field is gone — ingest auth is per-project in v2 via
+// the requireProjectKey middleware, which needs the keystore + project
+// store + HMAC pepper to verify a presented X-API-Key.
 type Config struct {
 	Store    store.LogStore
+	Keys     store.KeyStore
+	Projects store.ProjectStore
 	Hub      *ws.Hub
 	Logger   *log.Logger
 	Driver   string
 	StaticFS fs.FS
+	Pepper   []byte
 }
 
 // NewServer wires up handler dependencies. It does not start anything.
@@ -44,13 +51,22 @@ func NewServer(cfg Config) *Server {
 	}
 	return &Server{
 		store:     cfg.Store,
+		keys:      cfg.Keys,
+		projects:  cfg.Projects,
 		hub:       cfg.Hub,
 		logger:    logger,
 		startedAt: time.Now(),
 		driver:    cfg.Driver,
 		staticFS:  cfg.StaticFS,
+		pepper:    cfg.Pepper,
+		usage:     newLastUsedThrottle(cfg.Keys),
 	}
 }
+
+// Throttle exposes the lastUsedThrottle so main.go can pass it to
+// StartLastUsedFlusher. The flusher goroutine writes accumulated
+// last_used_at updates to the DB on a 60s ticker — see middleware.go.
+func (s *Server) Throttle() *lastUsedThrottle { return s.usage }
 
 // Routes returns the configured http.Handler. Standard library mux is
 // enough for our tiny route table — adding chi/gorilla/mux would be
@@ -58,14 +74,14 @@ func NewServer(cfg Config) *Server {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Ingest endpoints are temporarily disabled (503) between Phase 5
-	// (config split, INGEST_API_KEY removed) and Phase 6 (requireProjectKey
-	// middleware lands). This is safe-by-default — refusing writes is
-	// better than accepting unauthenticated ones.
-	mux.HandleFunc("POST /api/v1/logs", ingestUnavailable)
-	mux.HandleFunc("POST /api/v1/logs/batch", ingestUnavailable)
+	// Ingest endpoints — protected by the project-key middleware.
+	// requireProjectKey resolves X-API-Key → Project, attaches it to ctx,
+	// and rejects archived projects with 403.
+	ingestAuth := requireProjectKey(s.keys, s.projects, s.pepper, s.usage)
+	mux.Handle("POST /api/v1/logs", ingestAuth(http.HandlerFunc(s.handleIngestSingle)))
+	mux.Handle("POST /api/v1/logs/batch", ingestAuth(http.HandlerFunc(s.handleIngestBatch)))
 
-	// Read endpoints (no auth per spec).
+	// Read endpoints (no auth per spec for now — Phase 8 adds session).
 	mux.HandleFunc("GET /api/v1/logs", s.handleQuery)
 	mux.HandleFunc("GET /api/v1/logs/{id}", s.handleGetByIDRoute)
 	mux.HandleFunc("GET /api/v1/sources", s.handleSources)
@@ -125,17 +141,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.ServeWS(s.hub, s.logger, w, r)
-}
-
-// ingestUnavailable is the temporary handler installed on POST /logs
-// and POST /logs/batch between Phase 5 and Phase 6. Returns 503 with a
-// short setup hint so an operator hitting it sees the expected next step
-// rather than a confusing 200 / 400 / 500.
-//
-// Removed once requireProjectKey middleware lands.
-func ingestUnavailable(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusServiceUnavailable,
-		"ingest disabled: v2 multi-project setup pending; create a project and issue a key via `mylogger42 admin issue-key` (Phase 6)")
 }
 
 // spaHandler serves the embedded React build. Unknown paths under the

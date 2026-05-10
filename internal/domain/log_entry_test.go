@@ -99,6 +99,30 @@ func TestToEntryDefaults(t *testing.T) {
 	}
 }
 
+func TestDecodeIngestBatchStrictRejectsProjectField(t *testing.T) {
+	// One bad entry in the batch must reject the whole array — the
+	// caller's atomicity rule means one rejection takes the whole batch.
+	bad := []byte(`[{"service":"a","level":"Info","message":"m"},` +
+		`{"service":"b","level":"Info","message":"m","project":"x"}]`)
+	if _, err := DecodeIngestBatchStrict(bad); err == nil {
+		t.Fatal("expected error rejecting batch entry with 'project' field")
+	}
+
+	good := []byte(`[{"service":"a","level":"Info","message":"m"}]`)
+	got, err := DecodeIngestBatchStrict(good)
+	if err != nil {
+		t.Fatalf("good batch rejected: %v", err)
+	}
+	if len(got) != 1 || got[0].Service != "a" {
+		t.Fatalf("unexpected batch: %+v", got)
+	}
+
+	// Non-array body — must error.
+	if _, err := DecodeIngestBatchStrict([]byte(`{"service":"a"}`)); err == nil {
+		t.Fatal("expected error on non-array batch body")
+	}
+}
+
 func TestDecodeIngestPayloadStrictRejectsProjectField(t *testing.T) {
 	// Per v2 spec: project is determined by the authenticating key, not by
 	// the payload. A top-level "project" field must be rejected.
