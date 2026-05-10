@@ -2,28 +2,334 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/silverbaq/mylogger42/internal/auth"
+	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/silverbaq/mylogger42/internal/store"
 )
 
-// requireAPIKey wraps a handler so it only runs when the request carries
-// the correct X-API-Key header. Used on POST ingest routes.
-func requireAPIKey(key string, next http.Handler) http.Handler {
+// --- ctx keys ---------------------------------------------------------
+//
+// Typed keys, unexported, so other packages can't accidentally collide.
+// Accessor functions below give the API handlers a clean interface to
+// pull values back out without needing to know the key types.
+
+type ctxKey int
+
+const (
+	ctxKeyProject ctxKey = iota
+	ctxKeyKeyID
+	ctxKeySession
+)
+
+// ProjectFromContext returns the Project stamped onto the request by
+// requireProjectKey. Returns nil and false on a request that didn't go
+// through that middleware (e.g. a read endpoint or an admin route).
+func ProjectFromContext(ctx context.Context) (*domain.Project, bool) {
+	p, ok := ctx.Value(ctxKeyProject).(*domain.Project)
+	return p, ok
+}
+
+// KeyIDFromContext returns the project_keys.id of the credential that
+// authenticated the current ingest request. Used for last_used_at
+// throttling. Empty string if not set.
+func KeyIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(ctxKeyKeyID).(string)
+	return id
+}
+
+// SessionFromContext returns the verified session claims attached by
+// requireSession.
+func SessionFromContext(ctx context.Context) (*auth.Claims, bool) {
+	c, ok := ctx.Value(ctxKeySession).(*auth.Claims)
+	return c, ok
+}
+
+// --- ingest auth (X-API-Key → project) --------------------------------
+
+// requireProjectKey is the v2 replacement for v1's requireAPIKey.
+//
+// Pipeline:
+//
+//  1. Parse X-API-Key as the canonical "mlk_<prefix>_<secret>" shape.
+//     Malformed input returns 401 immediately.
+//  2. Look up the active key by prefix in the keystore.
+//     On miss, run a dummy HMAC computation so timing doesn't leak the
+//     existence-or-not of the prefix.
+//  3. Constant-time HMAC compare against the stored fingerprint.
+//  4. Resolve the project. If archived, return 403 — archived projects
+//     accept no new ingest.
+//  5. Attach Project + key.ID to the request context, lazily refresh
+//     last_used_at via the throttler, and call next.
+//
+// We intentionally do NOT short-circuit on the prefix-lookup miss to
+// avoid a timing oracle. See FakeVerifyForTimingParity in internal/auth.
+func requireProjectKey(
+	keys store.KeyStore,
+	projects store.ProjectStore,
+	pepper []byte,
+	usage *lastUsedThrottle,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw := r.Header.Get("X-API-Key")
+			prefix, secret, err := auth.ParseKey(raw)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid api key")
+				return
+			}
+
+			ctx := r.Context()
+			rec, storedHMAC, lookupErr := keys.GetActiveByPrefix(ctx, prefix)
+			if errors.Is(lookupErr, store.ErrNotFound) {
+				// Burn equivalent CPU so timing doesn't reveal "no such
+				// prefix" vs "wrong secret".
+				auth.FakeVerifyForTimingParity(pepper)
+				writeError(w, http.StatusUnauthorized, "invalid api key")
+				return
+			}
+			if lookupErr != nil {
+				// Storage error — log and fail closed.
+				writeError(w, http.StatusInternalServerError, "storage error")
+				return
+			}
+
+			if !auth.VerifyKey(pepper, secret, storedHMAC) {
+				writeError(w, http.StatusUnauthorized, "invalid api key")
+				return
+			}
+
+			project, err := projects.GetByID(ctx, rec.ProjectID)
+			if err != nil {
+				// A FK constraint guarantees the row exists; if we hit
+				// this, the DB is in an unexpected state.
+				writeError(w, http.StatusInternalServerError, "storage error")
+				return
+			}
+			if project.ArchivedAt != nil {
+				writeError(w, http.StatusForbidden, "project archived")
+				return
+			}
+
+			ctx = context.WithValue(ctx, ctxKeyProject, project)
+			ctx = context.WithValue(ctx, ctxKeyKeyID, rec.ID)
+			r = r.WithContext(ctx)
+
+			// Best-effort, non-blocking. The throttler swallows errors
+			// internally — a failed last_used_at update must not fail
+			// the ingest call.
+			if usage != nil {
+				usage.note(rec.ID)
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// lastUsedThrottle keeps an in-memory map of "the last time we wrote
+// last_used_at for this key." If the entry is younger than throttleEvery
+// we skip the DB write. State is non-durable — a restart loses it,
+// which means at most one extra write per active key per restart.
+//
+// The throttler runs no goroutine of its own here; main.go starts a
+// flusher (StartLastUsedFlusher) that drains pending writes on a 60s
+// ticker. note() just records the intent.
+//
+// Spec note: the spec puts ownership of the map in the keystore. We
+// keep it in the API layer for v2 because (a) it's the only consumer,
+// and (b) the keystore impls are the SQL boundary and shouldn't carry
+// state. The flusher pulls from here.
+type lastUsedThrottle struct {
+	mu      sync.Mutex
+	pending map[string]time.Time // keyID → "wants update at"
+	keys    store.KeyStore
+}
+
+const throttleEvery = 60 * time.Second
+
+func newLastUsedThrottle(keys store.KeyStore) *lastUsedThrottle {
+	return &lastUsedThrottle{
+		pending: make(map[string]time.Time),
+		keys:    keys,
+	}
+}
+
+// note records that a key was used. The actual DB write is deferred to
+// the flusher.
+func (t *lastUsedThrottle) note(keyID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pending[keyID] = time.Now().UTC()
+}
+
+// flush writes the pending updates to the DB and clears the map. Safe
+// to call concurrently with note(); flush() drains under the same mutex.
+func (t *lastUsedThrottle) flush(ctx context.Context) {
+	t.mu.Lock()
+	if len(t.pending) == 0 {
+		t.mu.Unlock()
+		return
+	}
+	pending := t.pending
+	t.pending = make(map[string]time.Time)
+	t.mu.Unlock()
+
+	for id, when := range pending {
+		_ = t.keys.NoteUsage(ctx, id, when) // best-effort
+	}
+}
+
+// StartLastUsedFlusher launches a goroutine that drains the throttle
+// map every throttleEvery. Stops when ctx is cancelled.
+//
+// Exposed so main.go can wire it up next to hub.Run / worker.Run.
+func StartLastUsedFlusher(ctx context.Context, t *lastUsedThrottle) {
+	go func() {
+		tick := time.NewTicker(throttleEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				// Drain once on shutdown so we don't lose the last
+				// minute of usage records.
+				t.flush(context.Background())
+				return
+			case <-tick.C:
+				t.flush(ctx)
+			}
+		}
+	}()
+}
+
+// --- session auth (cookie → claims) -----------------------------------
+
+// sessionCookieName is the documented cookie name. Kept as a constant
+// so the auth handlers (login/logout) reference the same string.
+const sessionCookieName = "session"
+
+// requireSession verifies the session JWT cookie and attaches the
+// parsed claims to the request context. On any failure (missing cookie,
+// bad signature, expired) it returns 401 and stops.
+//
+// Sliding renewal: if the claims' iat is more than renewAfter old, we
+// re-issue the cookie in the response so an active user never has to
+// log in again until they go silent for the full TTL.
+func requireSession(
+	signer *auth.SessionSigner,
+	cookieSecure func(*http.Request) bool,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := r.Cookie(sessionCookieName)
+			if err != nil || c.Value == "" {
+				writeError(w, http.StatusUnauthorized, "session required")
+				return
+			}
+			now := time.Now().UTC()
+			claims, err := signer.Verify(c.Value, now)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "session invalid")
+				return
+			}
+
+			// Sliding renewal — only re-issue when iat is old enough,
+			// to avoid setting a fresh cookie on every single request.
+			if signer.ShouldRenew(claims.IssuedAt, now) {
+				if newTok, err := signer.Issue(claims.Subject, claims.Username, now); err == nil {
+					http.SetCookie(w, buildSessionCookie(newTok, cookieSecure(r)))
+				}
+			}
+
+			ctx := context.WithValue(r.Context(), ctxKeySession, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// buildSessionCookie returns the canonical session cookie. Used by both
+// the renewal path in requireSession and the login handler. SameSite=Lax
+// blocks cross-site form POSTs; HttpOnly prevents JS access. Secure is
+// set per the cookieSecure resolver (auto-detect from r.TLS or trust
+// X-Forwarded-Proto when configured).
+func buildSessionCookie(value string, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
+	}
+}
+
+// CookieSecureResolver returns a function the middleware can call to
+// decide whether to mark cookies Secure. The result depends on:
+//
+//   - request was over TLS (r.TLS != nil), OR
+//   - operator opted into TRUST_FORWARDED_PROTO and the request carries
+//     X-Forwarded-Proto: https (i.e. terminated TLS at a reverse proxy).
+//
+// Otherwise (plain HTTP local dev), Secure is false so login works on
+// http://localhost.
+func CookieSecureResolver(trustForwardedProto bool) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		if r.TLS != nil {
+			return true
+		}
+		if trustForwardedProto && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			return true
+		}
+		return false
+	}
+}
+
+// --- CSRF (Origin/Host match) -----------------------------------------
+
+// requireSameOrigin is a belt-and-suspenders check on top of
+// SameSite=Lax for admin write endpoints. If an Origin header is
+// present (mutating browser methods always send it), it must match Host.
+// Missing Origin (e.g. direct curl, top-level navigation) is allowed —
+// SameSite + the cookie's HttpOnly already rule out the relevant attack
+// surfaces in those paths.
+func requireSameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := r.Header.Get("X-API-Key")
-		if got == "" || got != key {
-			writeError(w, http.StatusUnauthorized, "invalid api key")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Origin is "scheme://host[:port]"; we only care about host[:port].
+		// Find the third "/" or end-of-string.
+		host := origin
+		if idx := strings.Index(origin, "://"); idx >= 0 {
+			host = origin[idx+3:]
+		}
+		if slash := strings.Index(host, "/"); slash >= 0 {
+			host = host[:slash]
+		}
+		if !strings.EqualFold(host, r.Host) {
+			writeError(w, http.StatusForbidden, "origin mismatch")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// withCORS adds permissive CORS headers — the UI is served from the same
-// origin in production but during dev the React app runs on a different
-// port, so allow-all is fine for v1 (no UI auth, ingest is key-protected).
+// --- CORS --------------------------------------------------------------
+
+// withCORS adds permissive CORS headers for ingest endpoints —
+// `Access-Control-Allow-Origin: *` lets any client POST with X-API-Key
+// without cookies. Used on the ingest routes only; the admin/auth
+// routes that need cookies use withCORSCredentials below.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -36,6 +342,29 @@ func withCORS(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// withCORSCredentials is the variant the SPA's auth/admin/read calls
+// use. CORS specs forbid `Allow-Origin: *` together with credentials,
+// so we echo the request's Origin (when present) and add Vary: Origin
+// so caches don't poison cross-origin responses.
+func withCORSCredentials(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- access logging ---------------------------------------------------
 
 // withLogging emits a one-line access log per request. We deliberately
 // don't pull in a structured logger — the server's own observability is
