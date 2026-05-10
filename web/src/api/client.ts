@@ -1,4 +1,19 @@
-import type { LogEntry, LogsQuery, QueryResponse, SourcesResponse } from './types';
+import type {
+  AuthMe,
+  CreateProjectRequest,
+  CreateProjectResponse,
+  IssueKeyRequest,
+  IssuedKey,
+  LogEntry,
+  LoginRequest,
+  LogsQuery,
+  Project,
+  ProjectKeysResponse,
+  ProjectsResponse,
+  QueryResponse,
+  SourcesResponse,
+  UpdateProjectRequest,
+} from './types';
 
 // Base URL for API calls. In dev Vite proxies /api to localhost:8080
 // (see vite.config.ts), and in production the SPA is served from the
@@ -22,7 +37,40 @@ export function wsUrl(path: string): string {
   return `${proto}://${window.location.host}${path}`;
 }
 
+// authExpiredEvent is fired whenever an API call returns 401, so
+// top-level UI code can redirect to /login. We don't import a router
+// here — staying decoupled lets the listener live wherever the SPA
+// shell sits.
+export const AUTH_EXPIRED = 'mylogger42:auth-expired' as const;
+
+// AuthExpiredError is thrown by asJson() when the server returns 401.
+// Hooks treat it as a "not signed in" signal and the global event
+// listener triggers a navigation to /login.
+export class AuthExpiredError extends Error {
+  constructor() {
+    super('session expired');
+    this.name = 'AuthExpiredError';
+  }
+}
+
+// HttpError carries the parsed server error message and the status
+// code so hooks/components can render targeted messaging.
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
 async function asJson<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    // Single source of truth for "the cookie is gone." Notify the
+    // shell so it can redirect, and throw so the caller stops.
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED));
+    throw new AuthExpiredError();
+  }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
@@ -33,29 +81,137 @@ async function asJson<T>(res: Response): Promise<T> {
     } catch {
       // ignore — keep status text fallback
     }
-    throw new Error(msg);
+    throw new HttpError(res.status, msg);
+  }
+  if (res.status === 204) {
+    // No body — return undefined (callers typing void will accept).
+    return undefined as T;
   }
   return (await res.json()) as T;
 }
 
-// fetchLogs queries the paginated history endpoint.
+// jsonRequest is the canonical fetch wrapper. credentials:'include' is
+// the v2 default — every request that depends on the session cookie
+// must include it, and harmlessly carries it on the few that don't.
+async function jsonRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const res = await fetch(url(path), {
+    ...init,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers ?? {}),
+    },
+  });
+  return asJson<T>(res);
+}
+
+// --- read endpoints (project-scoped) ----------------------------------
+
 export async function fetchLogs(query: LogsQuery): Promise<QueryResponse> {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {
     if (v === undefined || v === null || v === '') continue;
     params.set(k, String(v));
   }
-  const qs = params.toString();
-  const res = await fetch(url(`/api/v1/logs${qs ? `?${qs}` : ''}`));
-  return asJson<QueryResponse>(res);
+  return jsonRequest<QueryResponse>(`/api/v1/logs?${params.toString()}`);
 }
 
-export async function fetchLogById(id: string): Promise<LogEntry> {
-  const res = await fetch(url(`/api/v1/logs/${encodeURIComponent(id)}`));
-  return asJson<LogEntry>(res);
+export async function fetchLogById(projectSlug: string, id: string): Promise<LogEntry> {
+  const params = new URLSearchParams({ project: projectSlug });
+  return jsonRequest<LogEntry>(
+    `/api/v1/logs/${encodeURIComponent(id)}?${params.toString()}`,
+  );
 }
 
-export async function fetchSources(): Promise<SourcesResponse> {
-  const res = await fetch(url('/api/v1/sources'));
-  return asJson<SourcesResponse>(res);
+export async function fetchSources(projectSlug: string): Promise<SourcesResponse> {
+  const params = new URLSearchParams({ project: projectSlug });
+  return jsonRequest<SourcesResponse>(`/api/v1/sources?${params.toString()}`);
+}
+
+// --- auth -------------------------------------------------------------
+
+export async function login(req: LoginRequest): Promise<void> {
+  await jsonRequest<void>('/api/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function logout(): Promise<void> {
+  await jsonRequest<void>('/api/v1/auth/logout', { method: 'POST' });
+}
+
+export async function fetchMe(): Promise<AuthMe> {
+  return jsonRequest<AuthMe>('/api/v1/auth/me');
+}
+
+// --- admin: projects --------------------------------------------------
+
+export async function listProjects(): Promise<ProjectsResponse> {
+  return jsonRequest<ProjectsResponse>('/api/v1/admin/projects');
+}
+
+export async function getProject(slug: string): Promise<Project> {
+  return jsonRequest<Project>(`/api/v1/admin/projects/${encodeURIComponent(slug)}`);
+}
+
+export async function createProject(
+  req: CreateProjectRequest,
+): Promise<CreateProjectResponse> {
+  return jsonRequest<CreateProjectResponse>('/api/v1/admin/projects', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateProject(
+  slug: string,
+  req: UpdateProjectRequest,
+): Promise<Project> {
+  return jsonRequest<Project>(`/api/v1/admin/projects/${encodeURIComponent(slug)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function archiveProject(slug: string): Promise<Project> {
+  return jsonRequest<Project>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/archive`,
+    { method: 'POST' },
+  );
+}
+
+export async function unarchiveProject(slug: string): Promise<Project> {
+  return jsonRequest<Project>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/unarchive`,
+    { method: 'POST' },
+  );
+}
+
+// --- admin: keys ------------------------------------------------------
+
+export async function listKeys(slug: string): Promise<ProjectKeysResponse> {
+  return jsonRequest<ProjectKeysResponse>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/keys`,
+  );
+}
+
+export async function issueKey(slug: string, req: IssueKeyRequest): Promise<IssuedKey> {
+  return jsonRequest<IssuedKey>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/keys`,
+    {
+      method: 'POST',
+      body: JSON.stringify(req),
+    },
+  );
+}
+
+export async function revokeKey(slug: string, keyId: string): Promise<void> {
+  await jsonRequest<void>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/keys/${encodeURIComponent(keyId)}`,
+    { method: 'DELETE' },
+  );
 }

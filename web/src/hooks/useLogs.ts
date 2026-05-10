@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchLogs } from '../api/client';
+import { AuthExpiredError, fetchLogs } from '../api/client';
 import type { LogEntry, LogsQuery } from '../api/types';
 
 interface UseLogsState {
@@ -67,6 +67,10 @@ export function useLogs(query: LogsQuery): UseLogsReturn {
       })
       .catch((err: Error) => {
         if (cancelled) return;
+        // The 401 path fires the global auth-expired event and the
+        // shell redirects to /login; we silently bail rather than
+        // flashing "session expired" in the page on our way out.
+        if (err instanceof AuthExpiredError) return;
         setState((s) => ({ ...s, loading: false, error: err.message }));
       });
     return () => {

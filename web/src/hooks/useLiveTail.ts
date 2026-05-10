@@ -20,7 +20,11 @@ interface UseLiveTailReturn {
 // useLiveTail manages the WebSocket connection lifecycle and exposes a
 // rolling buffer of received entries. Caller controls connect/disconnect
 // explicitly so the page can show a "connect" button.
-export function useLiveTail(initialFilter: LiveTailFilter = {}): UseLiveTailReturn {
+//
+// initialFilter MUST carry at least one project slug — the v2 server
+// closes the connection (1007) if the first frame's `projects` array
+// is empty. Caller is responsible for supplying it.
+export function useLiveTail(initialFilter: LiveTailFilter): UseLiveTailReturn {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [state, setState] = useState<ConnectionState>('idle');
   const wsRef = useRef<WebSocket | null>(null);
@@ -37,12 +41,15 @@ export function useLiveTail(initialFilter: LiveTailFilter = {}): UseLiveTailRetu
   const connect = useCallback(() => {
     if (wsRef.current) return;
     setState('connecting');
+    // The browser sends the session cookie automatically on
+    // same-origin WS upgrades — no extra credentials option needed.
     const ws = new WebSocket(wsUrl('/api/v1/logs/stream'));
     wsRef.current = ws;
 
     ws.onopen = () => {
       setState('open');
-      // Server expects an immediate filter message after connect.
+      // Server expects an immediate filter message after connect. The
+      // filter must carry at least one project slug.
       ws.send(JSON.stringify(filterRef.current));
     };
     ws.onmessage = (ev) => {
