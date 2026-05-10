@@ -62,7 +62,7 @@ func main() {
 	hub := ws.NewHub(logger)
 	go hub.Run(rootCtx)
 
-	worker := retention.New(stores.Logs, cfg.RetentionDays, logger)
+	worker := retention.New(stores.Logs, stores.Projects, cfg.RetentionDays, logger)
 	go worker.Run(rootCtx)
 
 	staticFS, err := mylogger42.StaticAssets()
