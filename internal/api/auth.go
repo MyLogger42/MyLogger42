@@ -87,7 +87,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, buildSessionCookie(tok, s.cookieSecure(r)))
-	w.WriteHeader(http.StatusOK)
+	// 204 — the cookie is the response. The SPA's API client treats any
+	// 2xx-without-body as "success, nothing to parse"; sending 200 here
+	// previously made fetch.json() throw "Unexpected end of JSON input"
+	// in the browser.
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleLogout clears the session cookie. Must run behind

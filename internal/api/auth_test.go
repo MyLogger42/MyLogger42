@@ -69,8 +69,8 @@ func TestLoginHappyPath(t *testing.T) {
 	rr := httptest.NewRecorder()
 	s.handleLogin(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 	cookies := rr.Result().Cookies()
 	var got *http.Cookie

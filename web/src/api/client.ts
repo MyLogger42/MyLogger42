@@ -83,11 +83,22 @@ async function asJson<T>(res: Response): Promise<T> {
     }
     throw new HttpError(res.status, msg);
   }
-  if (res.status === 204) {
-    // No body — return undefined (callers typing void will accept).
+  // No body to parse: 204 by spec, or any 2xx that the server emitted
+  // with Content-Length: 0 (or no body at all). We used to assume only
+  // 204 fell into this bucket, but 200-with-Set-Cookie-and-no-body is
+  // an idiom for cookie-issuing endpoints — calling res.json() on
+  // those threw "Unexpected end of JSON input." Tolerating both shapes
+  // is more robust and costs nothing.
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
     return undefined as T;
   }
-  return (await res.json()) as T;
+  // Read the raw text so an unexpectedly-empty body doesn't blow up
+  // res.json(); fall through to undefined for callers typing void.
+  const text = await res.text();
+  if (text === '') {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
 }
 
 // jsonRequest is the canonical fetch wrapper. credentials:'include' is
