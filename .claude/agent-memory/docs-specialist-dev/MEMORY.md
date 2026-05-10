@@ -1,2 +1,0 @@
-- [modernc.org/sqlite DATETIME aggregates lose type](feedback_modernc_sqlite_aggregates.md) — MIN/MAX of DATETIME must be scanned as string, not time.Time
-- [ResponseWriter wrappers must forward Hijack](feedback_response_writer_hijack.md) — custom RW wrappers break WS upgrade unless they implement http.Hijacker
