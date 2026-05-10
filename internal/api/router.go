@@ -116,6 +116,24 @@ func (s *Server) Routes() http.Handler {
 		sessionAuth(requireSameOrigin(http.HandlerFunc(s.handleLogout))))
 	mux.Handle("GET /api/v1/auth/me", sessionAuth(http.HandlerFunc(s.handleMe)))
 
+	// Admin surface. Read methods get session only; write methods get
+	// session + same-origin (CSRF defense in depth on top of SameSite).
+	adminWrite := func(h http.HandlerFunc) http.Handler {
+		return sessionAuth(requireSameOrigin(h))
+	}
+	adminRead := func(h http.HandlerFunc) http.Handler {
+		return sessionAuth(h)
+	}
+	mux.Handle("POST /api/v1/admin/projects", adminWrite(s.handleCreateProject))
+	mux.Handle("GET /api/v1/admin/projects", adminRead(s.handleListProjects))
+	mux.Handle("GET /api/v1/admin/projects/{slug}", adminRead(s.handleGetProject))
+	mux.Handle("PATCH /api/v1/admin/projects/{slug}", adminWrite(s.handleUpdateProject))
+	mux.Handle("POST /api/v1/admin/projects/{slug}/archive", adminWrite(s.handleArchiveProject))
+	mux.Handle("POST /api/v1/admin/projects/{slug}/unarchive", adminWrite(s.handleUnarchiveProject))
+	mux.Handle("POST /api/v1/admin/projects/{slug}/keys", adminWrite(s.handleIssueKey))
+	mux.Handle("GET /api/v1/admin/projects/{slug}/keys", adminRead(s.handleListKeys))
+	mux.Handle("DELETE /api/v1/admin/projects/{slug}/keys/{keyId}", adminWrite(s.handleRevokeKey))
+
 	// Public — health check stays open.
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
