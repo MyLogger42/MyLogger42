@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { FilterBar, localToRfc3339, type FilterValues } from '../components/FilterBar';
 import { LogList } from '../components/LogList';
 import { useLogs } from '../hooks/useLogs';
@@ -16,16 +17,17 @@ const initialFilter: FilterValues = {
   levels: [],
 };
 
-// LogsPage is the search/history view. It wires FilterBar + useLogs +
-// LogList together and provides server-side pagination via offset.
+// LogsPage is the per-project history view. The active project comes
+// from the URL (/projects/:slug/logs); the FilterBar + useLogs +
+// LogList stack are unchanged from v1, just scoped.
 export function LogsPage() {
-  const { sources } = useSources();
+  const { slug = '' } = useParams();
+  const { sources } = useSources(slug);
   const [filter, setFilter] = useState<FilterValues>(initialFilter);
 
-  // Build the typed query passed to useLogs. We translate datetime-local
-  // strings to RFC3339 here so the hook isn't aware of UI representation.
   const query = useMemo<LogsQuery>(() => {
     return {
+      project: slug,
       service: filter.service || undefined,
       level: filter.level || undefined,
       search: filter.search || undefined,
@@ -35,7 +37,7 @@ export function LogsPage() {
       offset: 0,
       sort: 'desc',
     };
-  }, [filter]);
+  }, [slug, filter]);
 
   const { items, total, limit, offset, loading, error, setOffset } = useLogs(query);
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { FilterBar, type FilterValues } from '../components/FilterBar';
 import { LogList } from '../components/LogList';
 import { useLiveTail } from '../hooks/useLiveTail';
@@ -13,28 +14,29 @@ const initialFilter: FilterValues = {
   levels: [],
 };
 
-// LiveTailPage opens a WebSocket to /api/v1/logs/stream and renders
-// every entry the server broadcasts that matches the current filter.
-// Connect/disconnect is explicit so the user can pause the stream.
+// LiveTailPage is the per-project live tail. The slug from the URL
+// (/projects/:slug/live) is the WebSocket filter's required project
+// component; user-driven service/level filters layer on top.
 export function LiveTailPage() {
-  const { sources } = useSources();
+  const { slug = '' } = useParams();
+  const { sources } = useSources(slug);
   const [filter, setFilter] = useState<FilterValues>(initialFilter);
-  const { entries, state, connect, disconnect, clear, setFilter: pushFilter } = useLiveTail();
+  const { entries, state, connect, disconnect, clear, setFilter: pushFilter } = useLiveTail({
+    projects: slug ? [slug] : [],
+  });
   const [autoScroll, setAutoScroll] = useState(true);
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Whenever the local filter changes, push the new LiveTailFilter to
-  // the server. The server applies it for subsequent broadcasts; we
-  // also clear the local buffer so the visible list matches the filter.
+  // Whenever the local filter changes, push a fresh frame.
   useEffect(() => {
+    if (!slug) return;
     pushFilter({
+      projects: [slug],
       services: filter.service ? [filter.service] : undefined,
       levels: filter.levels.length > 0 ? filter.levels : undefined,
     });
-  }, [filter, pushFilter]);
+  }, [slug, filter, pushFilter]);
 
-  // Auto-scroll to the newest entry when enabled. The user can disable
-  // auto-scroll to inspect older rows without being yanked away.
   useEffect(() => {
     if (!autoScroll) return;
     listEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
