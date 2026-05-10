@@ -17,7 +17,6 @@ import (
 type Server struct {
 	store     store.LogStore
 	hub       *ws.Hub
-	apiKey    string
 	logger    *log.Logger
 	startedAt time.Time
 	driver    string
@@ -25,10 +24,13 @@ type Server struct {
 }
 
 // Config bundles the dependencies required to build a Server.
+//
+// The v1 APIKey field is gone — ingest auth is per-project in v2 and
+// will be wired in Phase 6 via requireProjectKey middleware that talks
+// to the KeyStore.
 type Config struct {
 	Store    store.LogStore
 	Hub      *ws.Hub
-	APIKey   string
 	Logger   *log.Logger
 	Driver   string
 	StaticFS fs.FS
@@ -43,7 +45,6 @@ func NewServer(cfg Config) *Server {
 	return &Server{
 		store:     cfg.Store,
 		hub:       cfg.Hub,
-		apiKey:    cfg.APIKey,
 		logger:    logger,
 		startedAt: time.Now(),
 		driver:    cfg.Driver,
@@ -57,9 +58,12 @@ func NewServer(cfg Config) *Server {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Auth-protected ingest endpoints.
-	mux.Handle("POST /api/v1/logs", requireAPIKey(s.apiKey, http.HandlerFunc(s.handleIngestSingle)))
-	mux.Handle("POST /api/v1/logs/batch", requireAPIKey(s.apiKey, http.HandlerFunc(s.handleIngestBatch)))
+	// Ingest endpoints are temporarily disabled (503) between Phase 5
+	// (config split, INGEST_API_KEY removed) and Phase 6 (requireProjectKey
+	// middleware lands). This is safe-by-default — refusing writes is
+	// better than accepting unauthenticated ones.
+	mux.HandleFunc("POST /api/v1/logs", ingestUnavailable)
+	mux.HandleFunc("POST /api/v1/logs/batch", ingestUnavailable)
 
 	// Read endpoints (no auth per spec).
 	mux.HandleFunc("GET /api/v1/logs", s.handleQuery)
@@ -121,6 +125,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.ServeWS(s.hub, s.logger, w, r)
+}
+
+// ingestUnavailable is the temporary handler installed on POST /logs
+// and POST /logs/batch between Phase 5 and Phase 6. Returns 503 with a
+// short setup hint so an operator hitting it sees the expected next step
+// rather than a confusing 200 / 400 / 500.
+//
+// Removed once requireProjectKey middleware lands.
+func ingestUnavailable(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusServiceUnavailable,
+		"ingest disabled: v2 multi-project setup pending; create a project and issue a key via `mylogger42 admin issue-key` (Phase 6)")
 }
 
 // spaHandler serves the embedded React build. Unknown paths under the

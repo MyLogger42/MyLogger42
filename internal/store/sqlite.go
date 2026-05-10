@@ -88,6 +88,13 @@ func runMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, dir string) erro
 	for _, n := range names {
 		if hook, ok := sqliteHooks[n]; ok {
 			if err := hook(ctx, db); err != nil {
+				if errors.Is(err, errSkipMigration) {
+					// Hook says "already applied" — skip the SQL and
+					// move on. Used for migrations whose SQL isn't
+					// natively idempotent on this driver (e.g. ALTER
+					// TABLE ADD COLUMN on SQLite).
+					continue
+				}
 				return fmt.Errorf("preflight %s: %w", n, err)
 			}
 		}

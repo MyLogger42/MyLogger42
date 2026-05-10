@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +19,8 @@ import (
 	"time"
 
 	"github.com/silverbaq/mylogger42/internal/api"
+	"github.com/silverbaq/mylogger42/internal/auth"
+	"github.com/silverbaq/mylogger42/internal/domain"
 	"github.com/silverbaq/mylogger42/internal/retention"
 	"github.com/silverbaq/mylogger42/internal/store"
 	"github.com/silverbaq/mylogger42/internal/ws"
@@ -38,21 +42,27 @@ func main() {
 	logger.Printf("starting mylogger42 (driver=%s, port=%d, retention=%dd)", cfg.DBDriver, cfg.HTTPPort, cfg.RetentionDays)
 
 	openCtx, openCancel := context.WithTimeout(rootCtx, 10*time.Second)
-	storage, err := store.Open(openCtx, store.Driver(cfg.DBDriver), cfg.DBDSN)
+	stores, err := store.OpenStores(openCtx, store.Driver(cfg.DBDriver), cfg.DBDSN)
 	openCancel()
 	if err != nil {
 		logger.Fatalf("storage: %v", err)
 	}
 	defer func() {
-		if err := storage.Close(); err != nil {
+		if err := stores.Logs.Close(); err != nil {
 			logger.Printf("storage close: %v", err)
 		}
 	}()
 
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(rootCtx, 5*time.Second)
+	if err := bootstrapAdminUser(bootstrapCtx, stores.Users, cfg, logger); err != nil {
+		logger.Fatalf("bootstrap admin: %v", err)
+	}
+	bootstrapCancel()
+
 	hub := ws.NewHub(logger)
 	go hub.Run(rootCtx)
 
-	worker := retention.New(storage, cfg.RetentionDays, logger)
+	worker := retention.New(stores.Logs, cfg.RetentionDays, logger)
 	go worker.Run(rootCtx)
 
 	staticFS, err := mylogger42.StaticAssets()
@@ -63,9 +73,8 @@ func main() {
 	}
 
 	srv := api.NewServer(api.Config{
-		Store:    storage,
+		Store:    stores.Logs,
 		Hub:      hub,
-		APIKey:   cfg.IngestAPIKey,
 		Logger:   logger,
 		Driver:   cfg.DBDriver,
 		StaticFS: staticFS,
@@ -98,13 +107,28 @@ func main() {
 }
 
 // config holds the runtime configuration parsed from environment vars.
+//
+// In v2 the single INGEST_API_KEY is gone — ingest auth is per-project
+// and lives in the project_keys table. Two new required secrets:
+//
+//   KEY_PEPPER     — HMAC pepper for project-key fingerprints.
+//   SESSION_SECRET — HS256 secret for admin session JWTs.
+//
+// Both are validated as ≥32 hex bytes. ADMIN_USERNAME and
+// ADMIN_PASSWORD_HASH are optional bootstrap-only values; on the first
+// start when users is empty AND both are set, an admin row is inserted.
+// On subsequent starts they're ignored.
 type config struct {
-	IngestAPIKey  string
-	DBDriver      string
-	DBDSN         string
-	RetentionDays int
-	HTTPPort      int
-	LogLevel      string
+	DBDriver            string
+	DBDSN               string
+	RetentionDays       int
+	HTTPPort            int
+	LogLevel            string
+	KeyPepper           []byte
+	SessionSecret       []byte
+	AdminUsername       string
+	AdminPasswordHash   string
+	TrustForwardedProto bool
 }
 
 func loadConfig() (config, error) {
@@ -115,10 +139,23 @@ func loadConfig() (config, error) {
 		RetentionDays: 30,
 		LogLevel:      strings.ToLower(getEnv("LOG_LEVEL", "info")),
 	}
-	cfg.IngestAPIKey = os.Getenv("INGEST_API_KEY")
-	if cfg.IngestAPIKey == "" {
-		return cfg, errors.New("INGEST_API_KEY is required")
+
+	pepper, err := decodeHexSecret("KEY_PEPPER")
+	if err != nil {
+		return cfg, err
 	}
+	cfg.KeyPepper = pepper
+
+	secret, err := decodeHexSecret("SESSION_SECRET")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.SessionSecret = secret
+
+	cfg.AdminUsername = os.Getenv("ADMIN_USERNAME")
+	cfg.AdminPasswordHash = os.Getenv("ADMIN_PASSWORD_HASH")
+	cfg.TrustForwardedProto = parseBool(os.Getenv("TRUST_FORWARDED_PROTO"))
+
 	if v := os.Getenv("HTTP_PORT"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
@@ -134,6 +171,94 @@ func loadConfig() (config, error) {
 		cfg.RetentionDays = n
 	}
 	return cfg, nil
+}
+
+// decodeHexSecret reads `name` from the env, decodes it as hex, and
+// validates the byte length is ≥32. Returns an error with the env-var
+// name in the message so config failures are easy to diagnose.
+//
+// The 32-byte floor is the v2 spec's security minimum for both the HMAC
+// pepper and the session JWT secret. Below that, brute-force becomes
+// tractable for a determined attacker. Operators should run
+// `mylogger42 admin generate-secrets` (Phase 13) for fresh values.
+func decodeHexSecret(name string) ([]byte, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil, fmt.Errorf("%s is required (set to ≥32 random hex bytes; "+
+			"`mylogger42 admin generate-secrets` will print fresh values)", name)
+	}
+	b, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be hex-encoded: %w", name, err)
+	}
+	if len(b) < 32 {
+		return nil, fmt.Errorf("%s is %d bytes after hex decode; need ≥32", name, len(b))
+	}
+	return b, nil
+}
+
+// parseBool accepts "true"/"1"/"yes" (case-insensitive) as true; anything
+// else is false. Used for opt-in feature flags whose default is "off".
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// bootstrapAdminUser inserts an admin user on first start if (and only
+// if) the users table is empty AND both ADMIN_USERNAME and
+// ADMIN_PASSWORD_HASH env vars are set.
+//
+// On subsequent starts (users non-empty) the env vars are ignored — the
+// DB is the source of truth. If users is empty and the env vars are
+// absent, the server still runs but the UI will be unusable until
+// `mylogger42 admin create-user` is invoked out-of-band.
+//
+// We only validate that the password hash starts with `$2` (the bcrypt
+// magic prefix). A wrong-but-bcrypt-shaped hash will fail at login time
+// and produce an actionable error.
+func bootstrapAdminUser(ctx context.Context, users store.UserStore, cfg config, logger *log.Logger) error {
+	count, err := users.Count(ctx)
+	if err != nil {
+		return fmt.Errorf("count users: %w", err)
+	}
+	if count > 0 {
+		// Already bootstrapped; ignore env vars even if set, so a stale
+		// .env can't shadow a real DB user.
+		return nil
+	}
+	if cfg.AdminUsername == "" || cfg.AdminPasswordHash == "" {
+		logger.Printf("admin: no admin user configured (set ADMIN_USERNAME and " +
+			"ADMIN_PASSWORD_HASH for first-start bootstrap, or run " +
+			"`mylogger42 admin create-user`); UI will be unusable until then")
+		return nil
+	}
+	if !strings.HasPrefix(cfg.AdminPasswordHash, "$2") {
+		return fmt.Errorf("ADMIN_PASSWORD_HASH does not look like a bcrypt hash " +
+			"(expected $2[aby]$...); use `mylogger42 admin hash-password`")
+	}
+
+	// crypto/rand → 32 hex chars makes a valid TEXT primary key. We don't
+	// pull in google/uuid here just for one ID; the auth package already
+	// gives us GenerateSecret which is exactly the right shape.
+	id, err := auth.GenerateSecret(16)
+	if err != nil {
+		return fmt.Errorf("generate admin id: %w", err)
+	}
+	user := domain.User{
+		ID:           id,
+		Username:     cfg.AdminUsername,
+		PasswordHash: cfg.AdminPasswordHash,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := users.Create(ctx, user); err != nil {
+		return fmt.Errorf("create admin: %w", err)
+	}
+	logger.Printf("admin: bootstrapped user %q from env vars", cfg.AdminUsername)
+	return nil
 }
 
 func getEnv(key, fallback string) string {
