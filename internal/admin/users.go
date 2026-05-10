@@ -17,12 +17,33 @@ import (
 	"golang.org/x/term"
 )
 
-// promptLine reads one line from in, trimming trailing newline. Echoes
-// stay enabled — used for non-secret prompts like usernames.
-func promptLine(in io.Reader, out io.Writer, prompt string) (string, error) {
+// prompter bundles the shared bufio.Reader the prompt helpers read
+// from with the underlying *os.File used for tty checks. Constructing
+// one once per command and passing it through means the buffered
+// reader doesn't accidentally swallow lines that later prompts
+// expected — a bug that bit the v2.1 init flow when each helper
+// wrapped stdin in its own bufio.Reader.
+type prompter struct {
+	br *bufio.Reader
+	tty *os.File // optional; only used to decide no-echo password
+}
+
+// newPrompter wraps in (typically os.Stdin) once. If in is an *os.File
+// the prompter remembers it so promptPassword can ask `term` whether
+// it's a terminal; otherwise we always use the line-reader fallback.
+func newPrompter(in io.Reader) *prompter {
+	p := &prompter{br: bufio.NewReader(in)}
+	if f, ok := in.(*os.File); ok {
+		p.tty = f
+	}
+	return p
+}
+
+// promptLine reads one line, trimming trailing newline. Echoes stay
+// enabled — used for non-secret prompts like usernames.
+func (p *prompter) promptLine(out io.Writer, prompt string) (string, error) {
 	fmt.Fprint(out, prompt)
-	r := bufio.NewReader(in)
-	line, err := r.ReadString('\n')
+	line, err := p.br.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
 	}
@@ -30,22 +51,25 @@ func promptLine(in io.Reader, out io.Writer, prompt string) (string, error) {
 }
 
 // promptPassword reads a password without echo if stdin is a terminal,
-// or reads a single line normally if it isn't (CI / pipe). Returns an
-// empty error for empty input — caller decides how to handle.
-func promptPassword(in *os.File, out io.Writer, prompt string) (string, error) {
+// or reads a single buffered line normally if it isn't (pipe / CI).
+// Returns the raw password value (or "" + nil error for empty input —
+// caller decides how to handle).
+//
+// The no-echo branch has to read from the *os.File directly (term
+// requires a file descriptor) and bypasses the shared bufio.Reader —
+// that's safe because the buffered reader is only used for echoing
+// reads, and a tty session never mixes the two.
+func (p *prompter) promptPassword(out io.Writer, prompt string) (string, error) {
 	fmt.Fprint(out, prompt)
-
-	// term.ReadPassword needs a file descriptor of a terminal.
-	if term.IsTerminal(int(in.Fd())) {
-		b, err := term.ReadPassword(int(in.Fd()))
+	if p.tty != nil && term.IsTerminal(int(p.tty.Fd())) {
+		b, err := term.ReadPassword(int(p.tty.Fd()))
 		fmt.Fprintln(out) // newline after the silent input
 		if err != nil {
 			return "", fmt.Errorf("read password: %w", err)
 		}
 		return string(b), nil
 	}
-	r := bufio.NewReader(in)
-	line, err := r.ReadString('\n')
+	line, err := p.br.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
 	}
@@ -78,7 +102,8 @@ func runCreateUser(ctx context.Context, in io.Reader, out, errw io.Writer, cfg C
 		return errors.New("a user already exists; use `admin set-password` to rotate the admin password")
 	}
 
-	username, err := promptLine(in, errw, "username: ")
+	pp := newPrompter(in)
+	username, err := pp.promptLine(errw, "username: ")
 	if err != nil {
 		return err
 	}
@@ -87,18 +112,14 @@ func runCreateUser(ctx context.Context, in io.Reader, out, errw io.Writer, cfg C
 		return errors.New("username must not be empty")
 	}
 
-	stdin, _ := in.(*os.File)
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-	pw, err := promptPassword(stdin, errw, "password: ")
+	pw, err := pp.promptPassword(errw, "password: ")
 	if err != nil {
 		return err
 	}
 	if pw == "" {
 		return errors.New("password must not be empty")
 	}
-	confirm, err := promptPassword(stdin, errw, "confirm:  ")
+	confirm, err := pp.promptPassword(errw, "confirm:  ")
 	if err != nil {
 		return err
 	}
@@ -159,18 +180,15 @@ func runSetPassword(ctx context.Context, in io.Reader, errw io.Writer, cfg Confi
 		return fmt.Errorf("look up user: %w", err)
 	}
 
-	stdin, _ := in.(*os.File)
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-	pw, err := promptPassword(stdin, errw, "new password: ")
+	pp := newPrompter(in)
+	pw, err := pp.promptPassword(errw, "new password: ")
 	if err != nil {
 		return err
 	}
 	if pw == "" {
 		return errors.New("password must not be empty")
 	}
-	confirm, err := promptPassword(stdin, errw, "confirm:      ")
+	confirm, err := pp.promptPassword(errw, "confirm:      ")
 	if err != nil {
 		return err
 	}

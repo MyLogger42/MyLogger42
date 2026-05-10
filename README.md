@@ -15,32 +15,33 @@ operator quickstart.
 
 ```sh
 make build
+./bin/mylogger42 admin init
+```
 
-# 1. Bootstrap secrets and the admin password hash. Append both
-#    KEY_PEPPER + SESSION_SECRET lines into your .env, plus
-#    ADMIN_USERNAME and ADMIN_PASSWORD_HASH.
-cp .env.example .env
-./bin/mylogger42 admin generate-secrets >> .env
-echo "ADMIN_USERNAME=admin" >> .env
-printf "ADMIN_PASSWORD_HASH=" >> .env
-./bin/mylogger42 admin hash-password >> .env
-# (paste your password, press enter, ctrl-D)
+`init` is the friendly bootstrapper. It walks you through:
 
-# 2. Edit .env to remove the placeholder KEY_PEPPER/SESSION_SECRET
-#    lines (the appended ones from generate-secrets are the real ones).
+1. Generating `KEY_PEPPER` + `SESSION_SECRET` (random, 32 bytes each).
+2. Setting your admin username + password (no-echo prompt).
+3. Optionally creating your first project + ingest key (key value
+   printed once on stdout — copy it before it scrolls away).
+4. Writing it all to `./.env` with mode 0600.
 
-# 3. Start the server.
+Then start the server:
+
+```sh
 set -a; source .env; set +a
 ./bin/mylogger42
-
-# 4. Create your first project + ingest key.
-./bin/mylogger42 admin create-project demo "Demo" --retention=14
-# → mlk_<prefix>_<secret>   (copy this; you won't see it again)
 ```
 
 The binary serves both the API and the embedded SPA on `HTTP_PORT`
 (8080 by default). Visit `http://localhost:8080/` and log in as the
 admin user.
+
+`admin init` is idempotent: re-running it preserves existing values
+(`KEY_PEPPER`, `SESSION_SECRET`, etc.) unless you pass `--force`. If
+you'd rather assemble `.env` by hand, the underlying primitives are
+still there (`admin generate-secrets`, `admin hash-password`,
+`admin create-project`); see the CLI reference below.
 
 ## Quickstart (Docker)
 
@@ -96,6 +97,10 @@ v2 has no in-process rate limiter by design.
 ## Admin CLI
 
 ```
+mylogger42 admin init [--force] [--print] [--no-project] [--env=PATH]
+                                                 # one-shot bootstrap: writes .env,
+                                                 # prompts for admin user, optional
+                                                 # first project + key
 mylogger42 admin generate-secrets               # prints KEY_PEPPER + SESSION_SECRET
 mylogger42 admin hash-password                   # stdin → bcrypt hash on stdout
 mylogger42 admin create-user                     # interactive
@@ -107,10 +112,10 @@ mylogger42 admin revoke-key <key-id>
 mylogger42 admin delete-project <slug> --force
 ```
 
-`generate-secrets` and `hash-password` need no env. The rest open the
-same DB the server uses, so they require `KEY_PEPPER`/`SESSION_SECRET`
-in the env block (any value of valid shape works for non-ingest
-operations, but in practice you'll have the real ones in `.env`).
+`init`, `generate-secrets`, and `hash-password` need no env (init is
+the bootstrap path itself). The rest open the same DB the server
+uses, so they require `KEY_PEPPER`/`SESSION_SECRET` in the env block
+— in practice you'll have the real ones in `.env` after running init.
 
 ## Layout
 

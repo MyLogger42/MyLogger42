@@ -42,6 +42,8 @@ func Run(args []string, cfg Config) error {
 	rest := args[1:]
 
 	switch cmd {
+	case "init":
+		return runInit(context.Background(), os.Stdin, os.Stdout, os.Stderr, cfg, rest)
 	case "generate-secrets":
 		return runGenerateSecrets(os.Stdout)
 	case "hash-password":
@@ -84,6 +86,10 @@ func printUsage(w io.Writer) {
 mylogger42 admin <subcommand>
 
 Subcommands:
+  init [--force] [--print] [--no-project] [--env=PATH]
+                                 friendly first-run bootstrap: writes .env,
+                                 prompts for admin user, optionally creates
+                                 a first project + key
   generate-secrets               print fresh KEY_PEPPER + SESSION_SECRET
   hash-password                  read a password on stdin, print bcrypt hash on stdout
   create-user                    interactive: prompts for username + password

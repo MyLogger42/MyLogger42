@@ -290,15 +290,23 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// runAdmin dispatches `mylogger42 admin <subcommand>`. Two subcommands
-// (generate-secrets, hash-password) need no env or DB. The rest load
-// config the same way the server does, so a single .env validates for
-// both server and CLI flows.
+// runAdmin dispatches `mylogger42 admin <subcommand>`. Several
+// subcommands run env-free:
+//
+//   - generate-secrets, hash-password: pure compute, no DB.
+//   - init: this IS the bootstrap that writes .env, so requiring .env
+//     to already exist would be circular. init reads whatever it needs
+//     directly (it loads .env from disk if present, else starts blank)
+//     and assembles its own admin.Config internally.
+//
+// Other subcommands share the server's loadConfig so a single .env
+// validates for both server and CLI flows.
 //
 // Errors are printed to stderr and exit non-zero; subcommand stdout
 // stays clean (machine-readable values only).
 func runAdmin(args []string) {
-	if len(args) > 0 && (args[0] == "generate-secrets" || args[0] == "hash-password" ||
+	if len(args) > 0 && (args[0] == "init" ||
+		args[0] == "generate-secrets" || args[0] == "hash-password" ||
 		args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
 		// Env-free subcommands.
 		if err := admin.Run(args, admin.Config{}); err != nil {
