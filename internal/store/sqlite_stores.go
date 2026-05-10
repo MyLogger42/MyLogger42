@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/silverbaq/mylogger42/internal/domain"
@@ -50,32 +51,166 @@ var errNotImplemented = errors.New("not implemented (v2 WIP)")
 
 type sqliteProjectStore struct{ db *sql.DB }
 
-func (s *sqliteProjectStore) Create(context.Context, domain.Project) error {
-	return errNotImplemented
+func (s *sqliteProjectStore) Create(ctx context.Context, p domain.Project) error {
+	const q = `INSERT INTO projects (id, slug, name, retention_days, created_at)
+	           VALUES (?, ?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, q,
+		p.ID, p.Slug, p.Name, p.RetentionDays, p.CreatedAt.UTC())
+	if err != nil {
+		// modernc.org/sqlite surfaces UNIQUE-constraint violations in the
+		// error message rather than via a typed sentinel; matching on the
+		// substring is the canonical idiom for this driver.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return ErrAlreadyExists
+		}
+		return err
+	}
+	return nil
 }
-func (s *sqliteProjectStore) GetBySlug(context.Context, string) (*domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) GetBySlug(ctx context.Context, slug string) (*domain.Project, error) {
+	const q = `SELECT id, slug, name, retention_days, created_at, archived_at
+	           FROM projects WHERE slug = ?`
+	return scanSqliteProjectRow(s.db.QueryRowContext(ctx, q, slug))
 }
-func (s *sqliteProjectStore) GetByID(context.Context, string) (*domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) GetByID(ctx context.Context, id string) (*domain.Project, error) {
+	const q = `SELECT id, slug, name, retention_days, created_at, archived_at
+	           FROM projects WHERE id = ?`
+	return scanSqliteProjectRow(s.db.QueryRowContext(ctx, q, id))
 }
-func (s *sqliteProjectStore) List(context.Context, bool) ([]domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) List(ctx context.Context, includeArchived bool) ([]domain.Project, error) {
+	q := `SELECT id, slug, name, retention_days, created_at, archived_at FROM projects`
+	if !includeArchived {
+		q += ` WHERE archived_at IS NULL`
+	}
+	q += ` ORDER BY slug ASC`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Project
+	for rows.Next() {
+		p, err := scanSqliteProjectRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
 }
-func (s *sqliteProjectStore) Update(context.Context, string, string, *int) (*domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) Update(ctx context.Context, slug, name string, retentionDays *int) (*domain.Project, error) {
+	const q = `UPDATE projects SET name = ?, retention_days = ? WHERE slug = ?`
+	res, err := s.db.ExecContext(ctx, q, name, retentionDays, slug)
+	if err != nil {
+		return nil, err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetBySlug(ctx, slug)
 }
-func (s *sqliteProjectStore) Archive(context.Context, string) (*domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) Archive(ctx context.Context, slug string) (*domain.Project, error) {
+	const q = `UPDATE projects SET archived_at = ? WHERE slug = ? AND archived_at IS NULL`
+	res, err := s.db.ExecContext(ctx, q, time.Now().UTC(), slug)
+	if err != nil {
+		return nil, err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		// Either not found, or already archived. Differentiate by lookup —
+		// archive should be idempotent if archived_at is already set.
+		if p, err := s.GetBySlug(ctx, slug); err == nil {
+			return p, nil
+		}
+		return nil, ErrNotFound
+	}
+	return s.GetBySlug(ctx, slug)
 }
-func (s *sqliteProjectStore) Unarchive(context.Context, string) (*domain.Project, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteProjectStore) Unarchive(ctx context.Context, slug string) (*domain.Project, error) {
+	const q = `UPDATE projects SET archived_at = NULL WHERE slug = ?`
+	res, err := s.db.ExecContext(ctx, q, slug)
+	if err != nil {
+		return nil, err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetBySlug(ctx, slug)
 }
-func (s *sqliteProjectStore) Delete(context.Context, string) error {
-	return errNotImplemented
+
+func (s *sqliteProjectStore) Delete(ctx context.Context, slug string) error {
+	const q = `DELETE FROM projects WHERE slug = ?`
+	res, err := s.db.ExecContext(ctx, q, slug)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
-func (s *sqliteProjectStore) Count(context.Context) (int, error) {
-	return 0, errNotImplemented
+
+func (s *sqliteProjectStore) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects`).Scan(&n)
+	return n, err
+}
+
+// scanSqliteProjectRow / scanSqliteProjectRows: shared scan logic for the
+// single-row (*sql.Row) and multi-row (*sql.Rows) cases. Splitting them
+// avoids generics here; the *sql.Row API differs from *sql.Rows enough
+// that a single helper would still need a wrapper.
+
+func scanSqliteProjectRow(row *sql.Row) (*domain.Project, error) {
+	var (
+		p         domain.Project
+		retention sql.NullInt64
+		archived  sql.NullTime
+		created   time.Time
+	)
+	if err := row.Scan(&p.ID, &p.Slug, &p.Name, &retention, &created, &archived); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	p.CreatedAt = created.UTC()
+	if retention.Valid {
+		v := int(retention.Int64)
+		p.RetentionDays = &v
+	}
+	if archived.Valid {
+		t := archived.Time.UTC()
+		p.ArchivedAt = &t
+	}
+	return &p, nil
+}
+
+func scanSqliteProjectRows(rows *sql.Rows) (*domain.Project, error) {
+	var (
+		p         domain.Project
+		retention sql.NullInt64
+		archived  sql.NullTime
+		created   time.Time
+	)
+	if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &retention, &created, &archived); err != nil {
+		return nil, err
+	}
+	p.CreatedAt = created.UTC()
+	if retention.Valid {
+		v := int(retention.Int64)
+		p.RetentionDays = &v
+	}
+	if archived.Valid {
+		t := archived.Time.UTC()
+		p.ArchivedAt = &t
+	}
+	return &p, nil
 }
 
 type sqliteKeyStore struct{ db *sql.DB }
