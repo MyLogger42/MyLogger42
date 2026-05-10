@@ -215,23 +215,134 @@ func scanSqliteProjectRows(rows *sql.Rows) (*domain.Project, error) {
 
 type sqliteKeyStore struct{ db *sql.DB }
 
-func (s *sqliteKeyStore) Create(context.Context, domain.ProjectKey, string) error {
-	return errNotImplemented
+func (s *sqliteKeyStore) Create(ctx context.Context, k domain.ProjectKey, hmac string) error {
+	const q = `INSERT INTO project_keys
+	           (id, project_id, prefix, hmac, label, created_at)
+	           VALUES (?, ?, ?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, q,
+		k.ID, k.ProjectID, k.Prefix, hmac, k.Label, k.CreatedAt.UTC())
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return ErrAlreadyExists
+	}
+	return err
 }
-func (s *sqliteKeyStore) GetActiveByPrefix(context.Context, string) (*domain.ProjectKey, string, error) {
-	return nil, "", errNotImplemented
+
+func (s *sqliteKeyStore) GetActiveByPrefix(ctx context.Context, prefix string) (*domain.ProjectKey, string, error) {
+	const q = `SELECT id, project_id, prefix, hmac, label, created_at, last_used_at, revoked_at
+	           FROM project_keys
+	           WHERE prefix = ? AND revoked_at IS NULL`
+	row := s.db.QueryRowContext(ctx, q, prefix)
+	return scanSqliteKeyRow(row)
 }
-func (s *sqliteKeyStore) ListByProject(context.Context, string, bool) ([]domain.ProjectKey, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteKeyStore) ListByProject(ctx context.Context, projectID string, includeRevoked bool) ([]domain.ProjectKey, error) {
+	q := `SELECT id, project_id, prefix, hmac, label, created_at, last_used_at, revoked_at
+	      FROM project_keys WHERE project_id = ?`
+	if !includeRevoked {
+		q += ` AND revoked_at IS NULL`
+	}
+	q += ` ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, q, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ProjectKey
+	for rows.Next() {
+		k, _, err := scanSqliteKeyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *k)
+	}
+	return out, rows.Err()
 }
-func (s *sqliteKeyStore) GetByID(context.Context, string) (*domain.ProjectKey, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteKeyStore) GetByID(ctx context.Context, id string) (*domain.ProjectKey, error) {
+	const q = `SELECT id, project_id, prefix, hmac, label, created_at, last_used_at, revoked_at
+	           FROM project_keys WHERE id = ?`
+	row := s.db.QueryRowContext(ctx, q, id)
+	k, _, err := scanSqliteKeyRow(row)
+	return k, err
 }
-func (s *sqliteKeyStore) Revoke(context.Context, string) error {
-	return errNotImplemented
+
+func (s *sqliteKeyStore) Revoke(ctx context.Context, id string) error {
+	const q = `UPDATE project_keys SET revoked_at = ?
+	           WHERE id = ? AND revoked_at IS NULL`
+	res, err := s.db.ExecContext(ctx, q, time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		// Already revoked or not found. Idempotency: if the key exists at
+		// all (revoked or not), return nil; otherwise ErrNotFound.
+		if _, err := s.GetByID(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
-func (s *sqliteKeyStore) NoteUsage(context.Context, string, time.Time) error {
-	return errNotImplemented
+
+func (s *sqliteKeyStore) NoteUsage(ctx context.Context, id string, when time.Time) error {
+	const q = `UPDATE project_keys SET last_used_at = ? WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q, when.UTC(), id)
+	return err
+}
+
+// scanSqliteKeyRow reads a single key row from *sql.Row. Returns the
+// key, its hex-encoded HMAC (column 4), and any error. ErrNotFound on
+// sql.ErrNoRows.
+func scanSqliteKeyRow(row *sql.Row) (*domain.ProjectKey, string, error) {
+	var (
+		k        domain.ProjectKey
+		hmac     string
+		created  time.Time
+		lastUsed sql.NullTime
+		revoked  sql.NullTime
+	)
+	err := row.Scan(&k.ID, &k.ProjectID, &k.Prefix, &hmac, &k.Label,
+		&created, &lastUsed, &revoked)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", ErrNotFound
+		}
+		return nil, "", err
+	}
+	k.CreatedAt = created.UTC()
+	if lastUsed.Valid {
+		t := lastUsed.Time.UTC()
+		k.LastUsedAt = &t
+	}
+	if revoked.Valid {
+		t := revoked.Time.UTC()
+		k.RevokedAt = &t
+	}
+	return &k, hmac, nil
+}
+
+// scanSqliteKeyRows reads one row from *sql.Rows.
+func scanSqliteKeyRows(rows *sql.Rows) (*domain.ProjectKey, string, error) {
+	var (
+		k        domain.ProjectKey
+		hmac     string
+		created  time.Time
+		lastUsed sql.NullTime
+		revoked  sql.NullTime
+	)
+	if err := rows.Scan(&k.ID, &k.ProjectID, &k.Prefix, &hmac, &k.Label,
+		&created, &lastUsed, &revoked); err != nil {
+		return nil, "", err
+	}
+	k.CreatedAt = created.UTC()
+	if lastUsed.Valid {
+		t := lastUsed.Time.UTC()
+		k.LastUsedAt = &t
+	}
+	if revoked.Valid {
+		t := revoked.Time.UTC()
+		k.RevokedAt = &t
+	}
+	return &k, hmac, nil
 }
 
 type sqliteUserStore struct{ db *sql.DB }
