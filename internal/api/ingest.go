@@ -28,7 +28,8 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	entry, err := payload.ToEntry(uuid.NewString(), time.Now().UTC())
+	// TODO(v2): projectID will be supplied by requireProjectKey middleware.
+	entry, err := payload.ToEntry(uuid.NewString(), "", time.Now().UTC())
 	if err != nil {
 		// Should not happen — Validate already exercised the same parse.
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -86,7 +87,8 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Allocate a UUID per entry up-front so we can return ids on
 		// success without an extra pass.
-		entry, err := p.ToEntry(uuid.NewString(), now)
+		// TODO(v2): projectID will be supplied by requireProjectKey middleware.
+		entry, err := p.ToEntry(uuid.NewString(), "", now)
 		if err != nil {
 			errs = append(errs, batchError{Index: i, Error: err.Error()})
 			continue

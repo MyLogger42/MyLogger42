@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,14 +75,19 @@ func ParseLogLevel(s string) (LogLevel, error) {
 
 // LogEntry is the canonical log record both at the API boundary and in
 // storage. Timestamps are RFC3339 on the wire, time.Time internally.
+//
+// ProjectID is server-stamped from the authenticating ingest key in the
+// API layer; it is never read from the client payload (see
+// DecodeIngestPayloadStrict, which rejects payloads that try).
 type LogEntry struct {
-	ID         string                 `json:"id"`
-	Service    string                 `json:"service"`
-	Level      LogLevel               `json:"level"`
-	Message    string                 `json:"message"`
-	Timestamp  time.Time              `json:"timestamp"`
-	Metadata   map[string]any         `json:"metadata"`
-	ReceivedAt time.Time              `json:"receivedAt"`
+	ID         string         `json:"id"`
+	ProjectID  string         `json:"projectId"`
+	Service    string         `json:"service"`
+	Level      LogLevel       `json:"level"`
+	Message    string         `json:"message"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Metadata   map[string]any `json:"metadata"`
+	ReceivedAt time.Time      `json:"receivedAt"`
 }
 
 // IngestPayload is the client-supplied shape for a single log POST. Fields
@@ -124,9 +130,11 @@ func (p IngestPayload) Validate() error {
 }
 
 // ToEntry converts a validated payload into a LogEntry, applying server
-// defaults: id, receivedAt, and timestamp/metadata fallbacks. Caller must
-// have already invoked Validate.
-func (p IngestPayload) ToEntry(id string, receivedAt time.Time) (LogEntry, error) {
+// defaults: id, receivedAt, and timestamp/metadata fallbacks. The
+// projectID is stamped by the caller (resolved from the authenticating
+// ingest key) — never trusted from the payload itself. Caller must have
+// already invoked Validate.
+func (p IngestPayload) ToEntry(id, projectID string, receivedAt time.Time) (LogEntry, error) {
 	level, err := ParseLogLevel(p.Level)
 	if err != nil {
 		return LogEntry{}, err
@@ -150,6 +158,7 @@ func (p IngestPayload) ToEntry(id string, receivedAt time.Time) (LogEntry, error
 
 	return LogEntry{
 		ID:         id,
+		ProjectID:  projectID,
 		Service:    p.Service,
 		Level:      level,
 		Message:    p.Message,
@@ -157,6 +166,25 @@ func (p IngestPayload) ToEntry(id string, receivedAt time.Time) (LogEntry, error
 		Metadata:   meta,
 		ReceivedAt: receivedAt.UTC(),
 	}, nil
+}
+
+// DecodeIngestPayloadStrict parses one IngestPayload from raw JSON and
+// rejects payloads containing unknown fields — most importantly a
+// top-level "project" field, which would otherwise let clients claim
+// project membership the auth layer didn't grant. Project membership is
+// always derived from the authenticating ingest key.
+//
+// This is the entry point handlers should use instead of plain
+// json.NewDecoder + Decode, because the strict decoder is the only place
+// the "no project field" rule is enforced.
+func DecodeIngestPayloadStrict(raw []byte) (IngestPayload, error) {
+	var p IngestPayload
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return IngestPayload{}, err
+	}
+	return p, nil
 }
 
 // Source is a read-only projection over the distinct services. It is not

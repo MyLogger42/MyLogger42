@@ -79,9 +79,12 @@ func TestToEntryDefaults(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	e, err := p.ToEntry("id-1", now)
+	e, err := p.ToEntry("id-1", "proj-test", now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if e.ProjectID != "proj-test" {
+		t.Fatalf("ProjectID = %q, want %q", e.ProjectID, "proj-test")
 	}
 	// Per spec: missing timestamp defaults to receivedAt.
 	if !e.Timestamp.Equal(now) {
@@ -96,30 +99,51 @@ func TestToEntryDefaults(t *testing.T) {
 	}
 }
 
+func TestDecodeIngestPayloadStrictRejectsProjectField(t *testing.T) {
+	// Per v2 spec: project is determined by the authenticating key, not by
+	// the payload. A top-level "project" field must be rejected.
+	bad := []byte(`{"service":"s","level":"Info","message":"m","project":"foo"}`)
+	if _, err := DecodeIngestPayloadStrict(bad); err == nil {
+		t.Fatal("expected error rejecting payload with 'project' field")
+	}
+	good := []byte(`{"service":"s","level":"Info","message":"m"}`)
+	if _, err := DecodeIngestPayloadStrict(good); err != nil {
+		t.Fatalf("good payload rejected: %v", err)
+	}
+}
+
 func TestLiveTailFilterMatches(t *testing.T) {
-	entry := LogEntry{Service: "auth", Level: LevelError}
+	entry := LogEntry{ProjectID: "p1", Service: "auth", Level: LevelError}
 
-	// Empty filter matches everything.
-	if !((LiveTailFilter{}).Matches(entry)) {
-		t.Fatal("empty filter should match")
+	// Empty filter — no projects specified — matches nothing per v2 spec.
+	if (LiveTailFilter{}).Matches(entry) {
+		t.Fatal("empty filter should not match (projects required)")
 	}
 
-	// Service mismatch.
-	if (LiveTailFilter{Services: []string{"billing"}}).Matches(entry) {
-		t.Fatal("service mismatch should not match")
+	// Project-only match.
+	if !(LiveTailFilter{Projects: []string{"p1"}}).Matches(entry) {
+		t.Fatal("project match should pass")
 	}
 
-	// Level mismatch.
-	if (LiveTailFilter{Levels: []LogLevel{LevelInfo}}).Matches(entry) {
-		t.Fatal("level mismatch should not match")
+	// Wrong project.
+	if (LiveTailFilter{Projects: []string{"other"}}).Matches(entry) {
+		t.Fatal("wrong project should not match")
 	}
 
-	// Both match.
+	// Project + service mismatch.
+	if (LiveTailFilter{
+		Projects: []string{"p1"},
+		Services: []string{"billing"},
+	}).Matches(entry) {
+		t.Fatal("service mismatch should fail")
+	}
+
+	// Project + level match.
 	if !(LiveTailFilter{
-		Services: []string{"auth"},
+		Projects: []string{"p1"},
 		Levels:   []LogLevel{LevelError, LevelFatal},
 	}).Matches(entry) {
-		t.Fatal("both should match")
+		t.Fatal("project + level match should pass")
 	}
 }
 

@@ -51,27 +51,29 @@ func (f QueryFilter) Validate() error {
 	return nil
 }
 
-// LiveTailFilter is the per-WS-client subscription filter. Empty slices
-// mean "match anything" for that dimension.
+// LiveTailFilter is the per-WS-client subscription filter. The Projects
+// slice carries project IDs (resolved from slugs at WS-connect time) and
+// is REQUIRED non-empty — broadcasting across all projects is an explicit
+// admin decision made out-of-band, not the WS default. Services and
+// Levels remain optional; empty means "any" for that dimension.
 type LiveTailFilter struct {
+	Projects []string   `json:"projects,omitempty"`
 	Services []string   `json:"services,omitempty"`
 	Levels   []LogLevel `json:"levels,omitempty"`
 }
 
 // Matches reports whether a published entry should be delivered to a
-// client with this filter.
+// client with this filter. A filter with no projects matches nothing —
+// callers must opt into at least one project explicitly.
 func (f LiveTailFilter) Matches(e LogEntry) bool {
-	if len(f.Services) > 0 {
-		hit := false
-		for _, s := range f.Services {
-			if s == e.Service {
-				hit = true
-				break
-			}
-		}
-		if !hit {
-			return false
-		}
+	if len(f.Projects) == 0 {
+		return false
+	}
+	if !contains(f.Projects, e.ProjectID) {
+		return false
+	}
+	if len(f.Services) > 0 && !contains(f.Services, e.Service) {
+		return false
 	}
 	if len(f.Levels) > 0 {
 		hit := false
@@ -86,4 +88,15 @@ func (f LiveTailFilter) Matches(e LogEntry) bool {
 		}
 	}
 	return true
+}
+
+// contains reports whether s is in the haystack. Used by Matches to keep
+// the per-dimension checks tight.
+func contains(haystack []string, s string) bool {
+	for _, h := range haystack {
+		if h == s {
+			return true
+		}
+	}
+	return false
 }
