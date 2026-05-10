@@ -1,5 +1,7 @@
 # ADR-005: API Key Auth for Ingest, Open UI
 
+> **Status:** Superseded by [ADR-007](./ADR-007-per-project-keys-and-session-auth.md) (v2 multi-project). The single-key, open-UI model below was the v1 design; v2 replaces both halves.
+
 ## Context
 
 MyLogger42 needs to prevent arbitrary internet traffic from injecting fake log events. The web UI does not need login — it is accessed by the developer only, behind a reverse proxy or VPN. Auth must be simple to configure in any HTTP client (curl, SDKs, etc.).

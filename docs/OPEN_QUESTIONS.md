@@ -4,11 +4,11 @@ All questions from the initial design phase have been resolved. Decisions are re
 
 ---
 
-## OQ-01: API Key Management — RESOLVED
+## OQ-01: API Key Management — RESOLVED → SUPERSEDED in v2
 
-**Decision:** Single static `INGEST_API_KEY` in `.env`. Rotation = update key + `docker compose restart`. Acceptable downtime for a solo dev tool.
+**v1 decision:** Single static `INGEST_API_KEY` in `.env`. Rotation = update key + `docker compose restart`. Acceptable downtime for a solo dev tool.
 
-**Rationale:** Zero additional complexity. Multi-key rotation can be added when (if) team or production use requires it.
+**v2 supersession:** Per-project keys (1..N per project) with HMAC-stored fingerprints. Revoke individual keys without restart. See [ADR-007](./architecture/ADR-007-per-project-keys-and-session-auth.md).
 
 ---
 
