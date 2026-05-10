@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/silverbaq/mylogger42/internal/admin"
 	"github.com/silverbaq/mylogger42/internal/api"
 	"github.com/silverbaq/mylogger42/internal/auth"
 	"github.com/silverbaq/mylogger42/internal/domain"
@@ -29,6 +30,16 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch: `mylogger42 admin <sub>` runs the CLI surface
+	// rather than starting the server. Two of the subcommands
+	// (generate-secrets, hash-password) need no env at all; the others
+	// share the server's loadConfig so DB-touching env vars are
+	// validated identically. We split the dispatch on that line.
+	if len(os.Args) >= 2 && os.Args[1] == "admin" {
+		runAdmin(os.Args[2:])
+		return
+	}
+
 	logger := log.New(os.Stdout, "mylogger42 ", log.LstdFlags|log.Lmsgprefix)
 
 	cfg, err := loadConfig()
@@ -277,4 +288,37 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// runAdmin dispatches `mylogger42 admin <subcommand>`. Two subcommands
+// (generate-secrets, hash-password) need no env or DB. The rest load
+// config the same way the server does, so a single .env validates for
+// both server and CLI flows.
+//
+// Errors are printed to stderr and exit non-zero; subcommand stdout
+// stays clean (machine-readable values only).
+func runAdmin(args []string) {
+	if len(args) > 0 && (args[0] == "generate-secrets" || args[0] == "hash-password" ||
+		args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
+		// Env-free subcommands.
+		if err := admin.Run(args, admin.Config{}); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(2)
+	}
+	adminCfg := admin.Config{
+		DBDriver:  cfg.DBDriver,
+		DBDSN:     cfg.DBDSN,
+		KeyPepper: cfg.KeyPepper,
+	}
+	if err := admin.Run(args, adminCfg); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 }
