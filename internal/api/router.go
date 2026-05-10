@@ -138,7 +138,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
 	// WebSocket live-tail.
-	mux.HandleFunc("GET /api/v1/logs/stream", s.handleStream)
+	// WS upgrade is gated by the same session cookie as the read
+	// endpoints. Browsers send cookies on same-origin upgrade requests
+	// automatically; cross-origin or non-browser tooling needs to
+	// supply the cookie manually.
+	mux.Handle("GET /api/v1/logs/stream", sessionAuth(http.HandlerFunc(s.handleStream)))
 
 	// Static SPA assets (optional). When the binary is built without the
 	// embedded web/dist tree, staticFS is nil and we skip these routes.
@@ -199,14 +203,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleStream upgrades the HTTP connection to a WebSocket and registers
-// the new client with the hub.
+// handleStream upgrades the HTTP connection to a WebSocket and
+// registers the new client with the hub. By the time we reach this
+// handler the requireSession middleware has already validated the
+// cookie — a missing/invalid session has been answered with 401
+// before the upgrade ever happens.
+//
+// ServeWS handles the rest: first-frame filter validation (slug→ID
+// resolution against the project store), the read/write goroutines,
+// and the per-client filter cache.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if s.hub == nil {
 		writeError(w, http.StatusServiceUnavailable, "live tail not enabled")
 		return
 	}
-	ws.ServeWS(s.hub, s.logger, w, r)
+	ws.ServeWS(s.hub, s.projects, s.logger, w, r)
 }
 
 // spaHandler serves the embedded React build. Unknown paths under the
