@@ -347,18 +347,60 @@ func scanSqliteKeyRows(rows *sql.Rows) (*domain.ProjectKey, string, error) {
 
 type sqliteUserStore struct{ db *sql.DB }
 
-func (s *sqliteUserStore) Create(context.Context, domain.User) error {
-	return errNotImplemented
+func (s *sqliteUserStore) Create(ctx context.Context, u domain.User) error {
+	const q = `INSERT INTO users (id, username, password_hash, created_at)
+	           VALUES (?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, q,
+		u.ID, u.Username, u.PasswordHash, u.CreatedAt.UTC())
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return ErrAlreadyExists
+	}
+	return err
 }
-func (s *sqliteUserStore) GetByUsername(context.Context, string) (*domain.User, error) {
-	return nil, errNotImplemented
+
+func (s *sqliteUserStore) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
+	const q = `SELECT id, username, password_hash, created_at, last_login_at
+	           FROM users WHERE username = ?`
+	row := s.db.QueryRowContext(ctx, q, username)
+	var (
+		u         domain.User
+		created   time.Time
+		lastLogin sql.NullTime
+	)
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &lastLogin); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	u.CreatedAt = created.UTC()
+	if lastLogin.Valid {
+		t := lastLogin.Time.UTC()
+		u.LastLoginAt = &t
+	}
+	return &u, nil
 }
-func (s *sqliteUserStore) UpdatePassword(context.Context, string, string) error {
-	return errNotImplemented
+
+func (s *sqliteUserStore) UpdatePassword(ctx context.Context, username, newHash string) error {
+	const q = `UPDATE users SET password_hash = ? WHERE username = ?`
+	res, err := s.db.ExecContext(ctx, q, newHash, username)
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
-func (s *sqliteUserStore) NoteLogin(context.Context, string, time.Time) error {
-	return errNotImplemented
+
+func (s *sqliteUserStore) NoteLogin(ctx context.Context, id string, when time.Time) error {
+	const q = `UPDATE users SET last_login_at = ? WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q, when.UTC(), id)
+	return err
 }
-func (s *sqliteUserStore) Count(context.Context) (int, error) {
-	return 0, errNotImplemented
+
+func (s *sqliteUserStore) Count(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
 }
