@@ -71,8 +71,7 @@ binary, and writes the result to `bin/mylogger42`.
 ./bin/mylogger42 admin init
 ```
 
-Run this directly — do **not** copy `.env.example` first. `admin init`
-generates everything for you.
+Run this directly — `admin init` generates everything for you.
 
 This walks you through everything in one go:
 
@@ -386,71 +385,181 @@ retention worker.)
 
 ### Rotate the admin password
 
+**Local:**
 ```sh
 ./bin/mylogger42 admin set-password <username>
+```
+
+**Docker:**
+```sh
+docker exec -it mylogger42 /app/mylogger42 admin set-password <username>
 ```
 
 Note: changing the password does **not** invalidate sessions issued
 under the old password — JWTs are signed with `SESSION_SECRET`, not
 linked to the password hash. If you're rotating because of a
-compromise, also rotate `SESSION_SECRET` (regenerate it, paste the
-new value into `.env`, restart the server). That kicks everyone out.
+compromise, also rotate `SESSION_SECRET` (see below). That kicks
+everyone out.
 
 ### Force everyone out
 
-Replace `SESSION_SECRET` in `.env` with a fresh value:
+**Local:** replace `SESSION_SECRET` in `.env` with a fresh value:
 
 ```sh
 ./bin/mylogger42 admin generate-secrets
+# copy just the SESSION_SECRET= line into .env, then restart
 ```
 
-…and copy just the `SESSION_SECRET=` line over. Restart the server.
-All previously-issued session cookies stop working.
+**Docker:** edit the secrets file on the data volume:
+
+```sh
+docker exec -it mylogger42 sh
+/app/mylogger42 admin generate-secrets   # copy the SESSION_SECRET= line
+vi /app/data/.secrets                    # replace the line, save
+exit
+docker compose restart mylogger42
+```
+
+All previously-issued session cookies stop working immediately after
+restart.
 
 ---
 
 ## Running with Docker
 
-```sh
-cp .env.example .env
-docker compose up -d --build
+The recommended way to self-host. No Go or Node toolchain needed —
+the image builds everything internally.
+
+### 1. Set your admin credentials
+
+Create a local `.env` file in the project root (it is gitignored, so
+it never gets committed):
+
+```
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your-strong-password
 ```
 
-Edit `.env` first — you need real values for `KEY_PEPPER` and
-`SESSION_SECRET`, plus optionally `ADMIN_USERNAME` /
-`ADMIN_PASSWORD_HASH` to seed the admin user on first start.
-
-If you'd rather use the interactive bootstrapper inside the
-container:
+Docker Compose reads this file automatically. Alternatively, export
+the variables in your shell before running:
 
 ```sh
-docker compose run --rm --service-ports mylogger42 admin init
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD=your-strong-password
+```
+
+> These variables are only used on **first boot** to seed the admin
+> user. Once the database has a user record they are ignored on every
+> subsequent start — the database is the source of truth.
+
+### 2. Start
+
+```sh
 docker compose up -d
 ```
 
-Or just run `admin init` on the host first to write `.env`, then
-`docker compose up -d`.
+On first boot the container automatically:
 
-The SQLite database is on a named volume (`mylogger42-data`) so it
-survives container restarts. Switch to Postgres by changing
-`DB_DRIVER`/`DB_DSN` in `.env`; no schema migration step needed, the
-binary applies migrations on start.
+1. Generates `KEY_PEPPER` and `SESSION_SECRET` and writes them to
+   `/app/data/.secrets` inside the named volume. They persist across
+   restarts and re-creates — rotating them invalidates all ingest keys
+   and logs out all active sessions.
+2. Hashes `ADMIN_PASSWORD` and seeds the admin user in the database.
+3. Applies any pending schema migrations.
+4. Starts serving on port `8080`.
+
+### 3. Follow the logs
+
+```sh
+docker compose logs -f mylogger42
+```
+
+On a clean first boot you should see lines like:
+
+```
+mylogger42: first boot — generating secrets
+mylogger42 init: starting mylogger42 (driver=sqlite, port=8080, retention=30d)
+mylogger42 init: bootstrapped user "admin" from env vars
+mylogger42 init: http listening on :8080
+```
+
+### Admin CLI via Docker
+
+All `admin` subcommands work through `docker exec`. The container
+already has `KEY_PEPPER` and `SESSION_SECRET` in its environment, so
+DB-touching commands work without any extra setup:
+
+```sh
+# Create a project and receive the first ingest key
+docker exec mylogger42 /app/mylogger42 admin create-project auth-service "Auth Service"
+
+# Issue an additional ingest key for an existing project
+docker exec mylogger42 /app/mylogger42 admin issue-key auth-service --label=ci-runner
+
+# Revoke a key by its UUID (shown in the UI Settings tab)
+docker exec mylogger42 /app/mylogger42 admin revoke-key <key-id>
+
+# Rotate the admin password (interactive, prompts for new password)
+docker exec -it mylogger42 /app/mylogger42 admin set-password admin
+
+# List all projects
+docker exec mylogger42 /app/mylogger42 admin list-projects
+```
+
+### Force everyone out (rotate SESSION_SECRET)
+
+Replacing `SESSION_SECRET` invalidates all outstanding session
+cookies. Edit the secrets file that lives on the data volume:
+
+```sh
+# Open a shell inside the running container
+docker exec -it mylogger42 sh
+
+# Generate a fresh secret pair (copy only the SESSION_SECRET= line)
+/app/mylogger42 admin generate-secrets
+
+# Edit the file — replace the SESSION_SECRET line with the new value
+vi /app/data/.secrets
+
+# Exit the shell, then restart
+docker compose restart mylogger42
+```
+
+### Data persistence
+
+The SQLite database and the generated secrets file are stored on the
+`mylogger42-data` named volume. The volume survives `docker compose
+down` — only `docker compose down -v` removes it (taking your data
+with it).
+
+### Switching to Postgres
+
+Add `DB_DRIVER` and `DB_DSN` to your local `.env`:
+
+```
+DB_DRIVER=postgres
+DB_DSN=postgres://user:pass@host:5432/mylogger42?sslmode=disable
+```
+
+No migration step needed — the binary applies migrations automatically
+on startup.
 
 ---
 
 ## Running behind a TLS reverse proxy
 
-Put Caddy / Nginx / Traefik in front for HTTPS. Two notes:
+**Required for internet-facing deployments.** Put Caddy / Nginx /
+Traefik in front so traffic reaches the server over HTTPS.
 
-1. Set `TRUST_FORWARDED_PROTO=true` in `.env`. The server then
-   honors `X-Forwarded-Proto: https` when deciding whether to mark
-   the session cookie `Secure` (so cookies aren't sent over plain
-   HTTP).
-2. There's no built-in rate limiter for login attempts. Point
-   fail2ban (or your proxy's equivalent) at the access log and ban
-   repeat `401`s on `POST /api/v1/auth/login`.
+`TRUST_FORWARDED_PROTO` is already set to `true` in
+`docker-compose.yml`. The server honors `X-Forwarded-Proto: https`
+when deciding whether to mark the session cookie `Secure`.
 
-Caddy minimal example:
+The server has a built-in login rate limiter (5 failed attempts per IP
+per 15 minutes). When running behind a proxy, it reads the real client
+IP from `X-Forwarded-For` automatically.
+
+Caddy minimal example (handles TLS automatically):
 
 ```
 logs.example.com {
@@ -458,25 +567,27 @@ logs.example.com {
 }
 ```
 
-Combined with `TRUST_FORWARDED_PROTO=true`, Caddy's automatic
-`X-Forwarded-Proto: https` is enough.
+If you are not using Docker, set `TRUST_FORWARDED_PROTO=true` in your
+`.env` and ensure your firewall only allows traffic to port 8080 from
+the proxy.
 
 ---
 
 ## Configuration reference (`.env`)
 
-| Variable                | Required          | Default                  | Notes                                                                                |
-|-------------------------|-------------------|--------------------------|--------------------------------------------------------------------------------------|
-| `KEY_PEPPER`            | yes               | —                        | 32+ random bytes, hex-encoded. Used to fingerprint ingest keys. `admin init` sets it. |
-| `SESSION_SECRET`        | yes               | —                        | 32+ random bytes, hex-encoded. Signs admin session JWTs.                              |
-| `ADMIN_USERNAME`        | first start only  | —                        | Bootstraps the admin user when the `users` table is empty.                            |
-| `ADMIN_PASSWORD_HASH`   | first start only  | —                        | bcrypt hash. Generate with `admin hash-password`.                                     |
-| `DB_DRIVER`             | no                | `sqlite`                 | `sqlite` or `postgres`.                                                               |
-| `DB_DSN`                | no                | `./data/mylogger42.db`   | Filesystem path or libpq URL.                                                         |
-| `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override. `0` = retain forever.                 |
-| `HTTP_PORT`             | no                | `8080`                   |                                                                                       |
-| `LOG_LEVEL`             | no                | `info`                   | Server's own access log verbosity.                                                    |
-| `TRUST_FORWARDED_PROTO` | no                | `false`                  | Set to `true` behind a TLS-terminating reverse proxy.                                 |
+| Variable                | Required          | Default                  | Notes                                                                                                      |
+|-------------------------|-------------------|--------------------------|------------------------------------------------------------------------------------------------------------|
+| `KEY_PEPPER`            | yes               | —                        | 32+ random bytes, hex-encoded. Fingerprints ingest keys. Auto-generated by Docker; `admin init` for local. |
+| `SESSION_SECRET`        | yes               | —                        | 32+ random bytes, hex-encoded. Signs admin session JWTs. Auto-generated by Docker.                         |
+| `ADMIN_USERNAME`        | first start only  | —                        | Bootstraps the admin user when the `users` table is empty.                                                 |
+| `ADMIN_PASSWORD`        | first start only  | —                        | **Docker only.** Plaintext password — the entrypoint hashes it before the server starts.                   |
+| `ADMIN_PASSWORD_HASH`   | first start only  | —                        | **Local dev only.** Pre-computed bcrypt hash. Generate with `admin hash-password`.                         |
+| `DB_DRIVER`             | no                | `sqlite`                 | `sqlite` or `postgres`.                                                                                    |
+| `DB_DSN`                | no                | `./data/mylogger42.db`   | Filesystem path or libpq URL.                                                                              |
+| `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override. `0` = retain forever.                                      |
+| `HTTP_PORT`             | no                | `8080`                   |                                                                                                            |
+| `LOG_LEVEL`             | no                | `info`                   | Server's own access log verbosity.                                                                         |
+| `TRUST_FORWARDED_PROTO` | no                | `false`                  | Set to `true` behind a TLS-terminating reverse proxy. Already `true` in `docker-compose.yml`.              |
 
 ---
 
@@ -484,16 +595,25 @@ Combined with `TRUST_FORWARDED_PROTO=true`, Caddy's automatic
 
 **`KEY_PEPPER is required` on startup.** You haven't sourced `.env`,
 or you ran the binary in a different shell from the one where you
-sourced it. Try `set -a; source .env; set +a` again, then start.
+sourced it. Try `set -a; source .env; set +a` again, then start. With
+Docker this should never occur — secrets are generated automatically
+on first boot and loaded from the data volume on every subsequent
+start.
 
 **Login screen gives "JSON" / "Unexpected end" errors.** You're on
 an old build. Rebuild (`make build`), restart, and hard-refresh the
 browser (Cmd-Shift-R / Ctrl-Shift-R).
 
-**"No admin configured" message in the UI.** Either `users` is empty
-and `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` weren't set on first
-start, or someone deleted the user row. Run
-`./bin/mylogger42 admin create-user` to fix.
+**"No admin configured" message in the UI.** The `users` table is
+empty and no admin was seeded on first boot. With Docker this means
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` were not set when the container
+first started. Fix it by running:
+
+```sh
+docker exec -it mylogger42 /app/mylogger42 admin create-user
+```
+
+For local dev: `./bin/mylogger42 admin create-user`.
 
 **Ingest returns `403 Forbidden`.** The project the key belongs to is
 archived. Unarchive it from the UI or accept that ingest is paused.
