@@ -145,10 +145,19 @@ export async function fetchSources(projectSlug: string): Promise<SourcesResponse
 // --- auth -------------------------------------------------------------
 
 export async function login(req: LoginRequest): Promise<void> {
-  await jsonRequest<void>('/api/v1/auth/login', {
+  // Bypass jsonRequest so a 401 (wrong credentials) throws HttpError
+  // instead of AuthExpiredError — the UI would otherwise show "session
+  // expired" for a plain bad-password attempt.
+  const res = await fetch(url('/api/v1/auth/login'), {
     method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   });
+  if (res.status === 401) {
+    throw new HttpError(401, 'invalid credentials');
+  }
+  return asJson<void>(res);
 }
 
 export async function logout(): Promise<void> {

@@ -63,8 +63,9 @@ func runInit(ctx context.Context, in io.Reader, out, errw io.Writer, dbCfg Confi
 	// --- secrets ------------------------------------------------------
 	//
 	// Pepper + session secret are 32 random bytes each, hex-encoded.
-	// Existing values are preserved unless --force.
-	if force || !dotenv.Has("KEY_PEPPER") {
+	// Existing values are preserved unless --force or the current value
+	// isn't a valid hex secret (e.g. a placeholder from .env.example).
+	if force || !dotenv.Has("KEY_PEPPER") || !isValidHexSecret(dotenv.Get("KEY_PEPPER")) {
 		v, err := auth.GenerateSecret(32)
 		if err != nil {
 			return fmt.Errorf("generate KEY_PEPPER: %w", err)
@@ -75,7 +76,7 @@ func runInit(ctx context.Context, in io.Reader, out, errw io.Writer, dbCfg Confi
 		fmt.Fprintln(errw, "init: KEY_PEPPER already set, preserving")
 	}
 
-	if force || !dotenv.Has("SESSION_SECRET") {
+	if force || !dotenv.Has("SESSION_SECRET") || !isValidHexSecret(dotenv.Get("SESSION_SECRET")) {
 		v, err := auth.GenerateSecret(32)
 		if err != nil {
 			return fmt.Errorf("generate SESSION_SECRET: %w", err)
@@ -140,7 +141,7 @@ func runInit(ctx context.Context, in io.Reader, out, errw io.Writer, dbCfg Confi
 		return nil
 	}
 
-	wantProject, err := promptYesNo(pp, errw, "Create a first project now? [Y/n] ", true)
+	wantProject, err := promptYesNo(pp, errw, "Create a first project now? [y/N] ", false)
 	if err != nil {
 		return err
 	}
@@ -342,4 +343,13 @@ func printNextSteps(errw io.Writer, hadProject bool) {
 // auth-package helper for one call site.
 func hexDecode(s string) ([]byte, error) {
 	return hex.DecodeString(s)
+}
+
+// isValidHexSecret reports whether s is a valid hex-encoded secret of
+// at least 32 bytes. Used to detect placeholder values from .env.example
+// (e.g. "replace-me-with-64-hex-chars") so init regenerates them instead
+// of silently preserving an unusable value.
+func isValidHexSecret(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) >= 32
 }

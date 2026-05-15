@@ -63,13 +63,16 @@ binary, and writes the result to `bin/mylogger42`.
 ./bin/mylogger42 admin init
 ```
 
+Run this directly — do **not** copy `.env.example` first. `admin init`
+generates everything for you.
+
 This walks you through everything in one go:
 
 - Generates `KEY_PEPPER` and `SESSION_SECRET` (the two crypto secrets
   the server needs to start).
 - Asks for the admin username and password (no echo on the password).
-- Optionally creates your first project and prints the first ingest
-  key.
+- Optionally creates a first project (default: skip — you can create
+  projects from the web UI after logging in).
 - Writes everything to `./.env` (mode `0600`, owner-only readable).
 
 You'll see something like:
@@ -82,23 +85,17 @@ admin password: ********
 confirm:        ********
 init: admin user configured
 init: wrote .env
-Create a first project now? [Y/n] y
-project slug (e.g. auth-service): auth-service
-project name: Auth Service
-retention days (blank = inherit global default): 14
-
-Your initial ingest key — copy it now, it won't be shown again:
-
-mlk_3xkza82bvwn4_8cqf2nrtmvpz9wljg7bdxkh4yvs
+Create a first project now? [y/N] n
 
 Next steps:
-  1. Source the env and start the server
-  ...
+  1. Source the env and start the server:
+       set -a; source .env; set +a
+       ./bin/mylogger42
+  2. Open http://localhost:8080/ and log in.
+  3. Create a project + key when ready:
+       ./bin/mylogger42 admin create-project <slug> <name>
+     or use the Projects page in the UI.
 ```
-
-**Copy the `mlk_…` value somewhere safe** — the server only stores a
-hash of it, so we genuinely cannot show it again later. If you lose
-it, just issue a new key (instructions below).
 
 ### 3. Start the server
 
@@ -113,11 +110,13 @@ default).
 ### 4. Log in
 
 Open `http://localhost:8080/` in your browser, sign in with the admin
-user you just created, and you'll land on the projects page.
+user you just created. If no projects exist yet you'll see an empty
+state with a **+ New project** button — create one there, copy the
+ingest key from the modal, and you're ready to send events.
 
 ### 5. Send your first log entry
 
-Use the ingest key from step 2. From any terminal:
+Use the ingest key issued when you created the project. From any terminal:
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/logs \
