@@ -24,6 +24,14 @@ serve separately.
 
 ---
 
+## Screenshots
+
+| Login | Logs | Settings |
+|-------|------|----------|
+| ![Login screen](screenshots/screenshot1.png) | ![Logs view with expanded entry](screenshots/screenshot3.png) | ![Project settings and ingest keys](screenshots/screenshot2.png) |
+
+---
+
 ## Concepts in 60 seconds
 
 You need to know three things to use MyLogger42 productively.
@@ -120,7 +128,7 @@ Use the ingest key issued when you created the project. From any terminal:
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/logs \
-  -H "X-API-Key: mlk_3xkza82bvwn4_8cqf2nrtmvpz9wljg7bdxkh4yvs" \
+  -H "X-API-Key: mlk_ch4kz63ldwhi_gpkm7u6d3iiuln7owtmbiawycp5qldxk" \
   -H "Content-Type: application/json" \
   -d '{
     "service": "signup",
