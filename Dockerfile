@@ -35,10 +35,13 @@ RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY --from=go-builder /out/mylogger42 /app/mylogger42
-RUN mkdir -p /app/data && chown -R app:app /app
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN mkdir -p /app/data && \
+    chmod +x /app/docker-entrypoint.sh && \
+    chown -R app:app /app
 USER app
 ENV DB_DSN=/app/data/mylogger42.db \
     HTTP_PORT=8080
 EXPOSE 8080
 VOLUME ["/app/data"]
-ENTRYPOINT ["/app/mylogger42"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
