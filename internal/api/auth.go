@@ -37,6 +37,13 @@ type loginRequest struct {
 // delegated to fail2ban / the reverse proxy. The constant-time delay
 // here is purely about removing the timing oracle, not throttling.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r, s.trustProxy)
+	if !s.loginLimiter.check(ip) {
+		w.Header().Set("Retry-After", "900")
+		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+
 	defer constantTimeFloor()()
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
@@ -62,6 +69,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Burn equivalent CPU on the bcrypt branch so timing doesn't
 		// reveal "no such user" vs "wrong password".
 		auth.VerifyPassword(dummyBcryptHash, req.Password)
+		s.loginLimiter.record(ip)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -72,6 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !auth.VerifyPassword(user.PasswordHash, req.Password) {
+		s.loginLimiter.record(ip)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

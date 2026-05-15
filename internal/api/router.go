@@ -27,6 +27,8 @@ type Server struct {
 	staticFS     fs.FS // optional embedded SPA assets
 	pepper       []byte
 	usage        *lastUsedThrottle
+	loginLimiter *loginRateLimiter
+	trustProxy   bool
 	signer       *auth.SessionSigner
 	cookieSecure func(*http.Request) bool
 }
@@ -40,17 +42,18 @@ type Server struct {
 // Read endpoints and admin handlers (Phase 9) are gated behind
 // requireSession, which uses Signer + CookieSecure.
 type Config struct {
-	Store        store.LogStore
-	Keys         store.KeyStore
-	Projects     store.ProjectStore
-	Users        store.UserStore
-	Hub          *ws.Hub
-	Logger       *log.Logger
-	Driver       string
-	StaticFS     fs.FS
-	Pepper       []byte
-	Signer       *auth.SessionSigner
-	CookieSecure func(*http.Request) bool
+	Store               store.LogStore
+	Keys                store.KeyStore
+	Projects            store.ProjectStore
+	Users               store.UserStore
+	Hub                 *ws.Hub
+	Logger              *log.Logger
+	Driver              string
+	StaticFS            fs.FS
+	Pepper              []byte
+	Signer              *auth.SessionSigner
+	CookieSecure        func(*http.Request) bool
+	TrustForwardedProto bool
 }
 
 // NewServer wires up handler dependencies. It does not start anything.
@@ -77,6 +80,8 @@ func NewServer(cfg Config) *Server {
 		staticFS:     cfg.StaticFS,
 		pepper:       cfg.Pepper,
 		usage:        newLastUsedThrottle(cfg.Keys),
+		loginLimiter: newLoginRateLimiter(),
+		trustProxy:   cfg.TrustForwardedProto,
 		signer:       cfg.Signer,
 		cookieSecure: cookieSecure,
 	}
@@ -86,6 +91,23 @@ func NewServer(cfg Config) *Server {
 // StartLastUsedFlusher. The flusher goroutine writes accumulated
 // last_used_at updates to the DB on a 60s ticker — see middleware.go.
 func (s *Server) Throttle() *lastUsedThrottle { return s.usage }
+
+// StartLoginLimiterCleanup purges stale per-IP rate-limit buckets every
+// 30 minutes so the map doesn't grow unbounded. Stops when ctx is cancelled.
+func (s *Server) StartLoginLimiterCleanup(ctx context.Context) {
+	go func() {
+		tick := time.NewTicker(30 * time.Minute)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				s.loginLimiter.cleanup()
+			}
+		}
+	}()
+}
 
 // Routes returns the configured http.Handler. Standard library mux is
 // enough for our tiny route table — adding chi/gorilla/mux would be

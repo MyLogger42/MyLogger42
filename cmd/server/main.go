@@ -84,23 +84,25 @@ func main() {
 	}
 
 	srv := api.NewServer(api.Config{
-		Store:        stores.Logs,
-		Keys:         stores.Keys,
-		Projects:     stores.Projects,
-		Users:        stores.Users,
-		Hub:          hub,
-		Logger:       logger,
-		Driver:       cfg.DBDriver,
-		StaticFS:     staticFS,
-		Pepper:       cfg.KeyPepper,
-		Signer:       auth.NewSessionSigner(cfg.SessionSecret),
-		CookieSecure: api.CookieSecureResolver(cfg.TrustForwardedProto),
+		Store:               stores.Logs,
+		Keys:                stores.Keys,
+		Projects:            stores.Projects,
+		Users:               stores.Users,
+		Hub:                 hub,
+		Logger:              logger,
+		Driver:              cfg.DBDriver,
+		StaticFS:            staticFS,
+		Pepper:              cfg.KeyPepper,
+		Signer:              auth.NewSessionSigner(cfg.SessionSecret),
+		CookieSecure:        api.CookieSecureResolver(cfg.TrustForwardedProto),
+		TrustForwardedProto: cfg.TrustForwardedProto,
 	})
 
 	// Drains the in-memory last_used_at updates accumulated by ingest
 	// requests and writes them to the DB on a 60s ticker. Stops when
 	// rootCtx is cancelled (and drains once on the way out).
 	api.StartLastUsedFlusher(rootCtx, srv.Throttle())
+	srv.StartLoginLimiterCleanup(rootCtx)
 
 	httpServer := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),

@@ -58,6 +58,7 @@ func authTestServer(t *testing.T, password string) (*Server, *fakeUserStore) {
 		users:        users,
 		signer:       signer,
 		cookieSecure: func(*http.Request) bool { return false },
+		loginLimiter: newLoginRateLimiter(),
 		logger:       log.New(io.Discard, "", 0),
 	}, users
 }
