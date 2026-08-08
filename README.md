@@ -1,38 +1,71 @@
+<div align="center">
+
 # MyLogger42
 
-A small, self-hosted logging server. Your apps `POST` JSON events to it,
-and you read them back in a browser — search, filter by service or
-level, or watch them stream in live.
+**A small, self-hosted logging server.** Your apps `POST` JSON events to it,
+and you read them back in a browser — search, filter, or watch them stream in live.
 
-Runs as a single binary. Single SQLite file by default; Postgres if you
-want. The web UI is bundled into the binary, so there's nothing to
-serve separately.
+[![CI](https://github.com/Silverbaq/MyLogger42/actions/workflows/ci.yml/badge.svg)](https://github.com/Silverbaq/MyLogger42/actions/workflows/ci.yml)
+[![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-```
-┌──────────────┐    POST  /api/v1/logs    ┌─────────────────┐
-│  your app    │ ───────────────────────▶ │   mylogger42    │
-│  (any lang)  │     X-API-Key: mlk_…     │  (Go binary)    │
-└──────────────┘                          │  + embedded UI  │
-                                          └────────┬────────┘
-                                                   │
-                                                   ▼
-        ┌──────────────────────────────────────────────────┐
-        │   Browser at http://localhost:8080/              │
-        │   admin login → search · filter · live tail      │
-        └──────────────────────────────────────────────────┘
-```
+![Logs view with expanded entry](screenshots/screenshot3.png)
+
+</div>
 
 ---
 
-## Screenshots
+## Features
 
-| Login | Logs | Settings |
-|-------|------|----------|
-| ![Login screen](screenshots/screenshot1.png) | ![Logs view with expanded entry](screenshots/screenshot3.png) | ![Project settings and ingest keys](screenshots/screenshot2.png) |
+- ⚡ **Single static binary** — the React UI is embedded, SQLite is built in. Nothing else to serve.
+- 🗂 **Multi-project** — one logical bucket per app, each with its own ingest keys and retention window.
+- 📡 **Live tail** — WebSocket stream, filter by service and level, watch events arrive in real time.
+- 🔍 **Search & filter** — service, level, time range, message substring; metadata shown per entry.
+- 🔐 **Locked down** — bcrypt admin login, rate-limited auth, HMAC-fingerprinted ingest keys, per-key revocation.
+- ♻️ **Retention** — background purge worker, per-project overrides, `0` = keep forever.
+- 🐳 **One-command deploy** — `docker compose up`, secrets auto-generated on first boot.
+- 🐘 **Postgres optional** — SQLite by default, switch with two env vars.
 
 ---
 
-## Concepts in 60 seconds
+## Quick start (Docker)
+
+```sh
+git clone https://github.com/Silverbaq/MyLogger42.git && cd MyLogger42
+printf 'ADMIN_USERNAME=admin\nADMIN_PASSWORD=change-me\n' > .env
+docker compose up -d
+```
+
+Open `http://localhost:8080/`, log in, hit **+ New project**, and copy
+the ingest key from the modal. Then send your first event:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/logs \
+  -H "X-API-Key: mlk_<your-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"service":"signup","level":"Info","message":"user registered","metadata":{"userId":"u_42"}}'
+```
+
+Reload the project's **Logs** page — your entry is there. Open **Live
+tail** in another tab and POST again — you'll see it arrive in real
+time. That's the whole loop.
+
+No Go or Node toolchain needed — the image builds everything
+internally. Prefer running the binary directly? See
+[Run from source](#run-from-source).
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    app["your app<br/>(any language)"] -- "POST /api/v1/logs<br/>X-API-Key: mlk_…" --> server["mylogger42<br/>single Go binary<br/>+ embedded UI"]
+    server --- db[("SQLite / Postgres")]
+    browser["browser · localhost:8080<br/>search · filter · live tail"] <--> server
+```
+
+### Concepts in 60 seconds
 
 You need to know three things to use MyLogger42 productively.
 
@@ -48,106 +81,6 @@ You need to know three things to use MyLogger42 productively.
   and can create / archive projects and issue / revoke keys. Read
   endpoints all require this login. Ingest endpoints do not — they
   only need a valid key.
-
----
-
-## Get started
-
-### 1. Build
-
-```sh
-make build
-```
-
-This builds the React UI and the Go binary, embeds the UI into the
-binary, and writes the result to `bin/mylogger42`.
-
-> Prerequisites: Go 1.22+, Node 20+, npm. SQLite is built in (no
-> system library needed).
-
-### 2. Bootstrap (one command)
-
-```sh
-./bin/mylogger42 admin init
-```
-
-Run this directly — `admin init` generates everything for you.
-
-This walks you through everything in one go:
-
-- Generates `KEY_PEPPER` and `SESSION_SECRET` (the two crypto secrets
-  the server needs to start).
-- Asks for the admin username and password (no echo on the password).
-- Optionally creates a first project (default: skip — you can create
-  projects from the web UI after logging in).
-- Writes everything to `./.env` (mode `0600`, owner-only readable).
-
-You'll see something like:
-
-```
-init: generated KEY_PEPPER
-init: generated SESSION_SECRET
-admin username: admin
-admin password: ********
-confirm:        ********
-init: admin user configured
-init: wrote .env
-Create a first project now? [y/N] n
-
-Next steps:
-  1. Source the env and start the server:
-       set -a; source .env; set +a
-       ./bin/mylogger42
-  2. Open http://localhost:8080/ and log in.
-  3. Create a project + key when ready:
-       ./bin/mylogger42 admin create-project <slug> <name>
-     or use the Projects page in the UI.
-```
-
-### 3. Start the server
-
-```sh
-set -a; source .env; set +a
-./bin/mylogger42
-```
-
-The binary serves the API and the UI on the same port (8080 by
-default).
-
-### 4. Log in
-
-Open `http://localhost:8080/` in your browser, sign in with the admin
-user you just created. If no projects exist yet you'll see an empty
-state with a **+ New project** button — create one there, copy the
-ingest key from the modal, and you're ready to send events.
-
-### 5. Send your first log entry
-
-Use the ingest key issued when you created the project. From any terminal:
-
-```sh
-curl -X POST http://localhost:8080/api/v1/logs \
-  -H "X-API-Key: mlk_ch4kz63ldwhi_gpkm7u6d3iiuln7owtmbiawycp5qldxk" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "service": "signup",
-    "level":   "Info",
-    "message": "user registered",
-    "metadata": {"userId": "u_42", "country": "DK"}
-  }'
-```
-
-Response:
-
-```json
-{"id": "ce384bf2-6de1-4b72-9e9f-232884dfd19a"}
-```
-
-Reload the project's **Logs** page in the UI — your entry is there.
-Open **Live tail** in another tab and POST again — you'll see it
-arrive in real time.
-
-That's the whole loop.
 
 ---
 
@@ -316,165 +249,106 @@ Per-project settings:
 The project switcher in the top bar lets you jump between projects
 while staying on whichever tab you were looking at.
 
+<details>
+<summary><strong>More screenshots</strong></summary>
+
+| Login | Settings |
+|-------|----------|
+| ![Login screen](screenshots/screenshot1.png) | ![Project settings and ingest keys](screenshots/screenshot2.png) |
+
+</details>
+
 ---
 
-## Day-to-day operations
+## Run from source
 
-### Issue another ingest key
-
-For a separate deploy, CI job, or dev machine you want to revoke
-independently:
-
-In the UI: **Settings → Ingest keys → Issue new key**.
-
-Or from the CLI:
+### 1. Build
 
 ```sh
-./bin/mylogger42 admin issue-key auth-service --label=ci-runner
+make build
 ```
 
-The plaintext `mlk_…` value is printed to stdout once — pipe it where
-it needs to go.
+This builds the React UI and the Go binary, embeds the UI into the
+binary, and writes the result to `bin/mylogger42`.
 
-### Revoke a key
+> Prerequisites: Go 1.22+, Node 20+, npm. SQLite is built in (no
+> system library needed).
 
-In the UI, click **Revoke** on the row. Or:
+### 2. Bootstrap (one command)
 
 ```sh
-./bin/mylogger42 admin revoke-key <key-id>
+./bin/mylogger42 admin init
 ```
 
-(`<key-id>` is the UUID shown in the keys table — not the prefix.)
+Run this directly — `admin init` generates everything for you.
 
-Revocation is immediate and idempotent. Anything still using the key
-will start getting `401 Unauthorized` on the next request.
+This walks you through everything in one go:
 
-### Create another project
+- Generates `KEY_PEPPER` and `SESSION_SECRET` (the two crypto secrets
+  the server needs to start).
+- Asks for the admin username and password (no echo on the password).
+- Optionally creates a first project (default: skip — you can create
+  projects from the web UI after logging in).
+- Writes everything to `./.env` (mode `0600`, owner-only readable).
 
-In the UI: **Projects → + New project**. The first key is shown once
-in a modal — copy it.
+You'll see something like:
 
-Or from the CLI:
+```
+init: generated KEY_PEPPER
+init: generated SESSION_SECRET
+admin username: admin
+admin password: ********
+confirm:        ********
+init: admin user configured
+init: wrote .env
+Create a first project now? [y/N] n
+
+Next steps:
+  1. Source the env and start the server:
+       set -a; source .env; set +a
+       ./bin/mylogger42
+  2. Open http://localhost:8080/ and log in.
+  3. Create a project + key when ready:
+       ./bin/mylogger42 admin create-project <slug> <name>
+     or use the Projects page in the UI.
+```
+
+### 3. Start the server
 
 ```sh
-./bin/mylogger42 admin create-project billing "Billing" --retention=30
+set -a; source .env; set +a
+./bin/mylogger42
 ```
 
-Prints the first key.
+The binary serves the API and the UI on the same port (8080 by
+default).
 
-### Change retention for one project
+### 4. Log in and create a project
 
-UI: **Settings → Project details → Retention (days)**. Save.
-
-- Blank → inherit `RETENTION_DAYS` from `.env`.
-- `0` → keep entries forever for this project.
-- Any positive integer → keep that many days; a background worker
-  deletes anything older once an hour.
-
-### Archive a project
-
-UI: **Settings → Danger zone → Archive**.
-
-Archived projects stop accepting ingest (clients get `403 Forbidden`)
-but their existing entries stay readable until retention deletes them.
-Reversible — **Unarchive** brings it back.
-
-If you want an archived project's entries kept indefinitely, set its
-retention to `0` **before** archiving. (Archive doesn't pause the
-retention worker.)
-
-### Rotate the admin password
-
-**Local:**
-```sh
-./bin/mylogger42 admin set-password <username>
-```
-
-**Docker:**
-```sh
-docker exec -it mylogger42 /app/mylogger42 admin set-password <username>
-```
-
-Note: changing the password does **not** invalidate sessions issued
-under the old password — JWTs are signed with `SESSION_SECRET`, not
-linked to the password hash. If you're rotating because of a
-compromise, also rotate `SESSION_SECRET` (see below). That kicks
-everyone out.
-
-### Force everyone out
-
-**Local:** replace `SESSION_SECRET` in `.env` with a fresh value:
-
-```sh
-./bin/mylogger42 admin generate-secrets
-# copy just the SESSION_SECRET= line into .env, then restart
-```
-
-**Docker:** edit the secrets file on the data volume:
-
-```sh
-docker exec -it mylogger42 sh
-/app/mylogger42 admin generate-secrets   # copy the SESSION_SECRET= line
-vi /app/data/.secrets                    # replace the line, save
-exit
-docker compose restart mylogger42
-```
-
-All previously-issued session cookies stop working immediately after
-restart.
+Open `http://localhost:8080/` in your browser, sign in with the admin
+user you just created. If no projects exist yet you'll see an empty
+state with a **+ New project** button — create one there, copy the
+ingest key from the modal, and you're ready to send events.
 
 ---
 
 ## Running with Docker
 
-The recommended way to self-host. No Go or Node toolchain needed —
-the image builds everything internally.
+The recommended way to self-host — see [Quick start](#quick-start-docker)
+for the three commands. Details:
 
-### 1. Set your admin credentials
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD` are only used on **first boot**
+  to seed the admin user. Once the database has a user record they are
+  ignored on every subsequent start — the database is the source of
+  truth.
+- On first boot the container generates `KEY_PEPPER` and
+  `SESSION_SECRET` and writes them to `/app/data/.secrets` inside the
+  named volume. They persist across restarts and re-creates — rotating
+  them invalidates all ingest keys and logs out all active sessions.
+- Migrations apply automatically on startup.
 
-Create a local `.env` file in the project root (it is gitignored, so
-it never gets committed):
-
-```
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your-strong-password
-```
-
-Docker Compose reads this file automatically. Alternatively, export
-the variables in your shell before running:
-
-```sh
-export ADMIN_USERNAME=admin
-export ADMIN_PASSWORD=your-strong-password
-```
-
-> These variables are only used on **first boot** to seed the admin
-> user. Once the database has a user record they are ignored on every
-> subsequent start — the database is the source of truth.
-
-### 2. Start
-
-```sh
-docker compose up -d
-```
-
-On first boot the container automatically:
-
-1. Generates `KEY_PEPPER` and `SESSION_SECRET` and writes them to
-   `/app/data/.secrets` inside the named volume. They persist across
-   restarts and re-creates — rotating them invalidates all ingest keys
-   and logs out all active sessions.
-2. Hashes `ADMIN_PASSWORD` and seeds the admin user in the database.
-3. Applies any pending schema migrations.
-4. Starts serving on port `8080`.
-
-### 3. Follow the logs
-
-```sh
-docker compose logs -f mylogger42
-```
-
-On a clean first boot you should see lines like:
+Follow the logs with `docker compose logs -f mylogger42`. On a clean
+first boot you should see lines like:
 
 ```
 mylogger42: first boot — generating secrets
@@ -483,47 +357,8 @@ mylogger42 admin: bootstrapped user "admin" from env vars
 mylogger42 http listening on :8080
 ```
 
-### Admin CLI via Docker
-
-All `admin` subcommands work through `docker exec`. The container
-already has `KEY_PEPPER` and `SESSION_SECRET` in its environment, so
-DB-touching commands work without any extra setup:
-
-```sh
-# Create a project and receive the first ingest key
-docker exec mylogger42 /app/mylogger42 admin create-project auth-service "Auth Service"
-
-# Issue an additional ingest key for an existing project
-docker exec mylogger42 /app/mylogger42 admin issue-key auth-service --label=ci-runner
-
-# Revoke a key by its UUID (shown in the UI Settings tab)
-docker exec mylogger42 /app/mylogger42 admin revoke-key <key-id>
-
-# Rotate the admin password (interactive, prompts for new password)
-docker exec -it mylogger42 /app/mylogger42 admin set-password admin
-
-# List all projects
-docker exec mylogger42 /app/mylogger42 admin list-projects
-```
-
-### Force everyone out (rotate SESSION_SECRET)
-
-Replacing `SESSION_SECRET` invalidates all outstanding session
-cookies. Edit the secrets file that lives on the data volume:
-
-```sh
-# Open a shell inside the running container
-docker exec -it mylogger42 sh
-
-# Generate a fresh secret pair (copy only the SESSION_SECRET= line)
-/app/mylogger42 admin generate-secrets
-
-# Edit the file — replace the SESSION_SECRET line with the new value
-vi /app/data/.secrets
-
-# Exit the shell, then restart
-docker compose restart mylogger42
-```
+All `admin` subcommands work through `docker exec` — see the
+[operations guide](docs/operations.md#admin-cli-via-docker).
 
 ### Data persistence
 
@@ -592,74 +427,11 @@ the proxy.
 
 ---
 
-## Troubleshooting
+## Operations & troubleshooting
 
-**`KEY_PEPPER is required` on startup.** You haven't sourced `.env`,
-or you ran the binary in a different shell from the one where you
-sourced it. Try `set -a; source .env; set +a` again, then start. With
-Docker this should never occur — secrets are generated automatically
-on first boot and loaded from the data volume on every subsequent
-start.
-
-**Login screen gives "JSON" / "Unexpected end" errors.** You're on
-an old build. Rebuild (`make build`), restart, and hard-refresh the
-browser (Cmd-Shift-R / Ctrl-Shift-R).
-
-**"No admin configured" message in the UI.** The `users` table is
-empty and no admin was seeded on first boot. With Docker this means
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` were not set when the container
-first started. Fix it by running:
-
-```sh
-docker exec -it mylogger42 /app/mylogger42 admin create-user
-```
-
-For local dev: `./bin/mylogger42 admin create-user`.
-
-**Ingest returns `403 Forbidden`.** The project the key belongs to is
-archived. Unarchive it from the UI or accept that ingest is paused.
-
-**Ingest returns `401 Unauthorized`.** The key is wrong, malformed
-(must be exactly `mlk_<12 chars>_<32 chars>`), or revoked. Issue a
-fresh one.
-
-**Ingest returns `400 Bad Request: unknown field "project"`.** Your
-payload includes a top-level `project` field. Remove it — the
-project comes from the auth header, not the body.
-
-**Live tail says "Connection error" / closes immediately with code
-1007.** The first WebSocket frame must include at least one project
-slug. The bundled UI always sends one; if you're connecting from a
-custom client, send `{"projects":["<slug>"]}` as the first message.
-
-**Ingest works fine but the UI shows nothing.** You're looking at
-the wrong project. Use the project switcher in the top bar.
-
----
-
-## Admin CLI reference
-
-```
-mylogger42 admin init [--force] [--print] [--no-project] [--env=PATH]
-                                          # one-shot bootstrap
-
-mylogger42 admin generate-secrets         # prints fresh KEY_PEPPER + SESSION_SECRET
-mylogger42 admin hash-password            # stdin → bcrypt hash on stdout
-
-mylogger42 admin create-user              # interactive
-mylogger42 admin set-password <username>  # interactive
-
-mylogger42 admin create-project <slug> <name> [--retention=N]
-mylogger42 admin list-projects
-mylogger42 admin issue-key <slug> [--label=...]
-mylogger42 admin revoke-key <key-id>
-mylogger42 admin delete-project <slug> --force   # hard delete (CLI only)
-```
-
-`init`, `generate-secrets`, and `hash-password` need no environment.
-The rest open the same database the server uses, so they need
-`DB_DRIVER`, `DB_DSN`, `KEY_PEPPER`, and `SESSION_SECRET` in the
-shell — sourcing `.env` covers all four.
+Key rotation and revocation, retention changes, archiving, admin
+password resets, forced logout, common errors, and the full admin CLI
+reference all live in the **[operations guide](docs/operations.md)**.
 
 ---
 
@@ -691,4 +463,11 @@ internal/store/     LogStore + ProjectStore + KeyStore + UserStore
 internal/retention/ per-project purge worker
 internal/ws/        WebSocket hub + per-client goroutines
 web/                React + Vite SPA, embedded into the binary
+docs/               operations guide
 ```
+
+---
+
+## License
+
+[MIT](LICENSE)
