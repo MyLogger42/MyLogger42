@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/auth"
-	"github.com/silverbaq/mylogger42/internal/store"
-	"github.com/silverbaq/mylogger42/internal/ws"
+	"github.com/mylogger42/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/ws"
 )
 
 // Server is the API layer. It owns no goroutines of its own; lifecycle

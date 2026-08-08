@@ -18,15 +18,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/admin"
-	"github.com/silverbaq/mylogger42/internal/api"
-	"github.com/silverbaq/mylogger42/internal/auth"
-	"github.com/silverbaq/mylogger42/internal/domain"
-	"github.com/silverbaq/mylogger42/internal/retention"
-	"github.com/silverbaq/mylogger42/internal/store"
-	"github.com/silverbaq/mylogger42/internal/ws"
+	"github.com/mylogger42/mylogger42/internal/admin"
+	"github.com/mylogger42/mylogger42/internal/api"
+	"github.com/mylogger42/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/retention"
+	"github.com/mylogger42/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/ws"
 
-	mylogger42 "github.com/silverbaq/mylogger42"
+	mylogger42 "github.com/mylogger42/mylogger42"
 )
 
 func main() {

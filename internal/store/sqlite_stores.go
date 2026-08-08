@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/domain"
 )
 
 // OpenSQLiteStores opens a SQLite DB and returns the v2 *Stores aggregate.

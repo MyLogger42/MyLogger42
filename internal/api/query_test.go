@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/domain"
-	"github.com/silverbaq/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/store"
 )
 
 // queryTestServer builds a minimal Server wired with the fake stores

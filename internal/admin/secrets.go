@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/silverbaq/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/auth"
 )
 
 // runGenerateSecrets prints fresh hex values for KEY_PEPPER and

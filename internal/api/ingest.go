@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/domain"
 )
 
 // maxBatchSize caps the number of entries POST /logs/batch will accept.

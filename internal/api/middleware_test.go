@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/auth"
-	"github.com/silverbaq/mylogger42/internal/domain"
-	"github.com/silverbaq/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/store"
 )
 
 // --- fakes ------------------------------------------------------------

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/silverbaq/mylogger42/internal/domain"
-	"github.com/silverbaq/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/store"
 )
 
 // openTestStores opens a fresh SQLite store under t.TempDir, runs all

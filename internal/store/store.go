@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/domain"
 )
 
 // Sentinel errors returned by all stores.

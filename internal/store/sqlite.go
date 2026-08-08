@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/domain"
-	"github.com/silverbaq/mylogger42/internal/store/migrations"
+	"github.com/mylogger42/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/store/migrations"
 
 	_ "modernc.org/sqlite"
 )

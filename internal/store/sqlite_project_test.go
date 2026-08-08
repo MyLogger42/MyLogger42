@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/domain"
 )
 
 // mkProject is a helper that builds a domain.Project with a fresh UUID

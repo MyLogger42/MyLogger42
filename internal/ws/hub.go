@@ -10,7 +10,7 @@ import (
 	"context"
 	"log"
 
-	"github.com/silverbaq/mylogger42/internal/domain"
+	"github.com/mylogger42/mylogger42/internal/domain"
 )
 
 // Hub maintains the set of active clients and broadcasts LogEntries to

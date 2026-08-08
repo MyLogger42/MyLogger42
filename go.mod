@@ -1,4 +1,4 @@
-module github.com/silverbaq/mylogger42
+module github.com/mylogger42/mylogger42
 
 go 1.22
 

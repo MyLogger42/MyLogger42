@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/silverbaq/mylogger42/internal/auth"
-	"github.com/silverbaq/mylogger42/internal/store"
+	"github.com/mylogger42/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/store"
 )
 
 // loginRequest is the body of POST /api/v1/auth/login.

@@ -5,7 +5,7 @@
 **A small, self-hosted logging server.** Your apps `POST` JSON events to it,
 and you read them back in a browser — search, filter, or watch them stream in live.
 
-[![CI](https://github.com/Silverbaq/MyLogger42/actions/workflows/ci.yml/badge.svg)](https://github.com/Silverbaq/MyLogger42/actions/workflows/ci.yml)
+[![CI](https://github.com/MyLogger42/MyLogger42/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLogger42/MyLogger42/actions/workflows/ci.yml)
 [![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -31,7 +31,7 @@ and you read them back in a browser — search, filter, or watch them stream in 
 ## Quick start (Docker)
 
 ```sh
-git clone https://github.com/Silverbaq/MyLogger42.git && cd MyLogger42
+git clone https://github.com/MyLogger42/MyLogger42.git && cd MyLogger42
 printf 'ADMIN_USERNAME=admin\nADMIN_PASSWORD=change-me\n' > .env
 docker compose up -d
 ```
