@@ -203,8 +203,9 @@ func TestRequireProjectKeyArchivedProject(t *testing.T) {
 
 func TestRequireSessionHappyPath(t *testing.T) {
 	signer := auth.NewSessionSigner([]byte("secret"))
-	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-	tok, err := signer.Issue("u-1", "admin", now)
+	// Issue against the real clock — requireSession verifies with
+	// time.Now(), so a fixed date here rots into an expired token.
+	tok, err := signer.Issue("u-1", "admin", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

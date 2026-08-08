@@ -587,7 +587,7 @@ the proxy.
 | `DB_DSN`                | no                | `./data/mylogger42.db`   | Filesystem path or libpq URL.                                                                              |
 | `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override. `0` = retain forever.                                      |
 | `HTTP_PORT`             | no                | `8080`                   |                                                                                                            |
-| `LOG_LEVEL`             | no                | `info`                   | Server's own access log verbosity.                                                                         |
+| `LOG_LEVEL`             | no                | `info`                   | `warn` or `error` silences the per-request access log; any other value keeps it on. Errors always log.     |
 | `TRUST_FORWARDED_PROTO` | no                | `false`                  | Set to `true` behind a TLS-terminating reverse proxy. Already `true` in `docker-compose.yml`.              |
 
 ---

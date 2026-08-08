@@ -96,6 +96,7 @@ func main() {
 		Signer:              auth.NewSessionSigner(cfg.SessionSecret),
 		CookieSecure:        api.CookieSecureResolver(cfg.TrustForwardedProto),
 		TrustForwardedProto: cfg.TrustForwardedProto,
+		LogLevel:            cfg.LogLevel,
 	})
 
 	// Drains the in-memory last_used_at updates accumulated by ingest

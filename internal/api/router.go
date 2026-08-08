@@ -31,6 +31,7 @@ type Server struct {
 	trustProxy   bool
 	signer       *auth.SessionSigner
 	cookieSecure func(*http.Request) bool
+	accessLog    bool
 }
 
 // Config bundles the dependencies required to build a Server.
@@ -54,6 +55,10 @@ type Config struct {
 	Signer              *auth.SessionSigner
 	CookieSecure        func(*http.Request) bool
 	TrustForwardedProto bool
+	// LogLevel controls the per-request access log: "warn" and "error"
+	// silence it, anything else (default "info") keeps it on. Error
+	// logging is unconditional either way.
+	LogLevel string
 }
 
 // NewServer wires up handler dependencies. It does not start anything.
@@ -84,6 +89,7 @@ func NewServer(cfg Config) *Server {
 		trustProxy:   cfg.TrustForwardedProto,
 		signer:       cfg.Signer,
 		cookieSecure: cookieSecure,
+		accessLog:    cfg.LogLevel != "warn" && cfg.LogLevel != "error",
 	}
 }
 
@@ -176,7 +182,11 @@ func (s *Server) Routes() http.Handler {
 	// logging), then access logging. The credential-aware CORS variant
 	// is required because read/admin endpoints rely on the session
 	// cookie — `Allow-Origin: *` + credentials is forbidden.
-	return withCORSCredentials(withLogging(s.logger, mux))
+	var handler http.Handler = mux
+	if s.accessLog {
+		handler = withLogging(s.logger, handler)
+	}
+	return withCORSCredentials(handler)
 }
 
 // handleGetByIDRoute is the wrapper that pulls the path param off the
