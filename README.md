@@ -478,9 +478,9 @@ On a clean first boot you should see lines like:
 
 ```
 mylogger42: first boot — generating secrets
-mylogger42 init: starting mylogger42 (driver=sqlite, port=8080, retention=30d)
-mylogger42 init: bootstrapped user "admin" from env vars
-mylogger42 init: http listening on :8080
+mylogger42 starting mylogger42 (driver=sqlite, port=8080, retention=30d)
+mylogger42 admin: bootstrapped user "admin" from env vars
+mylogger42 http listening on :8080
 ```
 
 ### Admin CLI via Docker
@@ -556,8 +556,9 @@ Traefik in front so traffic reaches the server over HTTPS.
 when deciding whether to mark the session cookie `Secure`.
 
 The server has a built-in login rate limiter (5 failed attempts per IP
-per 15 minutes). When running behind a proxy, it reads the real client
-IP from `X-Forwarded-For` automatically.
+per 15 minutes). When `TRUST_FORWARDED_PROTO=true` is set (as in
+`docker-compose.yml`), it reads the real client IP from
+`X-Forwarded-For`; otherwise it uses the connection's remote address.
 
 Caddy minimal example (handles TLS automatically):
 
@@ -690,8 +691,4 @@ internal/store/     LogStore + ProjectStore + KeyStore + UserStore
 internal/retention/ per-project purge worker
 internal/ws/        WebSocket hub + per-client goroutines
 web/                React + Vite SPA, embedded into the binary
-docs/               architecture decisions, contracts, sequences
 ```
-
-Architecture decisions and the v2 multi-project design are written
-up in [`docs/architecture/`](./docs/architecture).

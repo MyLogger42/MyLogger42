@@ -13,8 +13,8 @@ import (
 
 // webDist holds the compiled React+Vite output. The directive uses
 // `all:` to include files prefixed with `_` or `.` (e.g. .vite cache
-// markers). If web/dist doesn't exist at build time we use a build tag
-// fallback (see embed_nodist.go) so the project compiles before the
+// markers). `make clean` leaves a web/dist/.gitkeep behind so the
+// directive still resolves and the project compiles before the
 // frontend is built.
 //
 //go:embed all:web/dist

@@ -221,8 +221,8 @@ func promptAdminUser(pp *prompter, errw io.Writer, existingUsername string) (use
 }
 
 // promptYesNo reads a y/n answer with a default. Defaults are picked
-// for the friendly path: "Create a first project now?" → yes, since
-// the operator running `admin init` almost certainly wants one.
+// for the friendly path: "Create a first project now?" → no, since
+// projects are just as easily created from the web UI after login.
 func promptYesNo(pp *prompter, errw io.Writer, prompt string, defaultYes bool) (bool, error) {
 	line, err := pp.promptLine(errw, prompt)
 	if err != nil {
