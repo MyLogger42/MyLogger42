@@ -64,6 +64,7 @@ button:disabled {
 }
 
 input[type='text'],
+input[type='password'],
 input[type='search'],
 input[type='datetime-local'],
 select {
@@ -79,6 +80,14 @@ input[type='text']::placeholder,
 input[type='search']::placeholder,
 input[type='datetime-local']::placeholder {
   color: var(--fg-placeholder);
+}
+
+/* Chrome/Safari paint autofilled fields white regardless of `background`.
+   An inset shadow is the only way to override it. */
+input:-webkit-autofill,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 100px var(--bg-elevated) inset;
+  -webkit-text-fill-color: var(--fg-input);
 }
 
 .app {
