@@ -447,6 +447,13 @@ input[type='datetime-local']::placeholder {
   gap: 16px;
 }
 
+.login-logo {
+  width: 180px;
+  max-width: 100%;
+  align-self: center;
+  margin-bottom: -8px;
+}
+
 .login-title {
   margin: 0;
   font-size: 28px;

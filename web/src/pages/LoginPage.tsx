@@ -47,6 +47,7 @@ export function LoginPage() {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={onSubmit}>
+        <img className="login-logo" src="/logo.png" alt="" />
         <h1 className="login-title">
           MyLogger<span className="brand-accent">42</span>
         </h1>

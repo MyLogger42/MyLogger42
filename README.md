@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="web/public/logo.png" width="300" alt="MyLogger42 logo">
+
 # MyLogger42
 
 **A small, self-hosted logging server.** Your apps `POST` JSON events to it,
