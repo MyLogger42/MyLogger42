@@ -38,6 +38,46 @@ export interface Source {
   totalEntries: number;
 }
 
+// --- stats (GET /api/v1/stats) ----------------------------------------
+// Mirrors domain.LogStats. Counts maps are partial: a level with no
+// entries in a bucket is absent rather than zero.
+
+export interface LevelBucket {
+  start: string;
+  counts: Partial<Record<LogLevel, number>>;
+}
+
+export interface MessageGroup {
+  service: string;
+  level: LogLevel;
+  message: string;
+  count: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface LogStats {
+  bucketSeconds: number;
+  series: LevelBucket[];
+  totals: Partial<Record<LogLevel, number>>;
+  topMessages: MessageGroup[];
+}
+
+// Bucket sizes the server accepts (domain.StatsBuckets). Anything else
+// is a 400 — the value lands in a GROUP BY divisor server-side.
+export const BUCKET_OPTIONS: { seconds: number; label: string }[] = [
+  { seconds: 60, label: '1m' },
+  { seconds: 300, label: '5m' },
+  { seconds: 3600, label: '1h' },
+  { seconds: 86400, label: '1d' },
+];
+
+// StatsQuery is LogsQuery minus paging (stats always describe the whole
+// filtered range) plus the histogram bucket size.
+export type StatsQuery = Omit<LogsQuery, 'limit' | 'offset' | 'sort'> & {
+  bucket?: number;
+};
+
 export interface QueryResponse {
   items: LogEntry[];
   total: number;

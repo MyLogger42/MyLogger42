@@ -137,6 +137,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/v1/logs", sessionAuth(http.HandlerFunc(s.handleQuery)))
 	mux.Handle("GET /api/v1/logs/{id}", sessionAuth(http.HandlerFunc(s.handleGetByIDRoute)))
 	mux.Handle("GET /api/v1/sources", sessionAuth(http.HandlerFunc(s.handleSources)))
+	mux.Handle("GET /api/v1/stats", sessionAuth(http.HandlerFunc(s.handleStats)))
 
 	// Auth surface. login is public; logout + /me require a session.
 	// (logout is also wrapped in requireSameOrigin per the spec's CSRF

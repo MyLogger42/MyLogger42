@@ -125,6 +125,43 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sources": srcs})
 }
 
+// handleStats implements GET /api/v1/stats.
+//
+// Same params as GET /api/v1/logs (project is required, every filter
+// optional) plus &bucket=<seconds> from domain.StatsBuckets. limit/offset
+// are ignored — stats always describe the whole filtered range, not the
+// page the user happens to be on.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	project, ok := s.resolveProjectFromQuery(w, r)
+	if !ok {
+		return
+	}
+	filter, err := parseQueryFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	bucket := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("bucket")); raw != "" {
+		bucket, err = strconv.Atoi(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bucket: "+err.Error())
+			return
+		}
+	}
+	if err := domain.ValidateBucketSeconds(bucket); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stats, err := s.store.Stats(r.Context(), project.ID, filter, bucket)
+	if err != nil {
+		s.logger.Printf("stats: %v", err)
+		writeError(w, http.StatusInternalServerError, "storage error")
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 // parseQueryFilter pulls the documented query string params into a
 // QueryFilter and applies validation. Unknown levels and malformed
 // timestamps both produce 400.

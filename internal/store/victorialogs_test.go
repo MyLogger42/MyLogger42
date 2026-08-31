@@ -336,3 +336,78 @@ func TestVLogsDeleteIsNoop(t *testing.T) {
 		t.Fatalf("deleted = %d, want 0", n)
 	}
 }
+
+// TestVLogsStatsPipelinesAndFolding pins the two LogsQL pipelines Stats
+// emits and the (bucket, level) → column folding, with no server needed.
+// The conformance suite behind the `vlogs` tag proves the same behaviour
+// against a real VictoriaLogs; this proves it on every `go test`.
+func TestVLogsStatsPipelinesAndFolding(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		q := r.Form.Get("query")
+		queries = append(queries, q)
+		switch {
+		case strings.Contains(q, "stats by (_time:"):
+			// Two levels inside one bucket, then a second bucket — the
+			// folding case. Counts arrive as strings.
+			_, _ = io.WriteString(w, `{"_time":"2026-08-31T10:00:00Z","level":"Error","rows":"3"}`+"\n"+
+				`{"_time":"2026-08-31T10:00:00Z","level":"Info","rows":"5"}`+"\n"+
+				`{"_time":"2026-08-31T11:00:00Z","level":"Error","rows":"1"}`+"\n")
+		default:
+			_, _ = io.WriteString(w,
+				`{"service":"api","level":"Error","_msg":"redis timeout","rows":"3","first_seen":"2026-08-31T10:00:00Z","last_seen":"2026-08-31T10:40:00Z"}`+"\n")
+		}
+	}))
+	defer srv.Close()
+
+	s, err := OpenVictoriaLogs(srv.URL)
+	if err != nil {
+		t.Fatalf("OpenVictoriaLogs: %v", err)
+	}
+	got, err := s.Stats(context.Background(), "proj_1", domain.QueryFilter{Service: "api"}, domain.BucketHour)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 pipelines, got %d: %v", len(queries), queries)
+	}
+	for _, want := range []string{
+		`project_id:="proj_1"`, `service:="api"`,
+		"stats by (_time:1h, level) count() rows", "| sort by (_time)",
+	} {
+		if !strings.Contains(queries[0], want) {
+			t.Errorf("series pipeline missing %q: %s", want, queries[0])
+		}
+	}
+	for _, want := range []string{
+		"stats by (service, level, _msg) count() rows",
+		"min(_time) first_seen", "max(_time) last_seen",
+		"| sort by (rows desc) | limit 10",
+	} {
+		if !strings.Contains(queries[1], want) {
+			t.Errorf("top pipeline missing %q: %s", want, queries[1])
+		}
+	}
+
+	// Two rows for the same instant collapse into one column.
+	if len(got.Series) != 2 {
+		t.Fatalf("Series = %+v, want 2 buckets", got.Series)
+	}
+	if got.Series[0].Counts[domain.LevelError] != 3 || got.Series[0].Counts[domain.LevelInfo] != 5 {
+		t.Errorf("bucket 0 counts = %+v, want Error:3 Info:5", got.Series[0].Counts)
+	}
+	if got.Totals[domain.LevelError] != 4 || got.Totals[domain.LevelInfo] != 5 {
+		t.Errorf("Totals = %+v, want Error:4 Info:5", got.Totals)
+	}
+	if len(got.TopMessages) != 1 || got.TopMessages[0].Count != 3 ||
+		got.TopMessages[0].Message != "redis timeout" {
+		t.Fatalf("TopMessages = %+v", got.TopMessages)
+	}
+	if want := time.Date(2026, 8, 31, 10, 40, 0, 0, time.UTC); !got.TopMessages[0].LastSeenAt.Equal(want) {
+		t.Errorf("LastSeenAt = %s, want %s", got.TopMessages[0].LastSeenAt, want)
+	}
+}

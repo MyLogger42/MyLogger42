@@ -45,6 +45,11 @@ type LogStore interface {
 	Get(ctx context.Context, projectID, id string) (*domain.LogEntry, error)
 	Query(ctx context.Context, projectID string, filter domain.QueryFilter) ([]domain.LogEntry, int, error)
 	Sources(ctx context.Context, projectID string) ([]domain.Source, error)
+	// Stats is the aggregate sibling of Query: same filter, but returns
+	// time-bucketed per-level counts, per-level totals and the top
+	// repeated (service, level, message) groups instead of rows.
+	// bucketSeconds must be one of domain.StatsBuckets; 0 means default.
+	Stats(ctx context.Context, projectID string, filter domain.QueryFilter, bucketSeconds int) (*domain.LogStats, error)
 	DeleteOlderThanForProject(ctx context.Context, projectID string, cutoff time.Time) (int64, error)
 	Ping(ctx context.Context) error
 	Close() error

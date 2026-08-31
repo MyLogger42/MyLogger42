@@ -393,6 +393,108 @@ func (s *sqliteStore) Sources(ctx context.Context, projectID string) ([]domain.S
 	return out, rows.Err()
 }
 
+// Stats aggregates the same filtered row set Query pages through. Two
+// round trips: the level-over-time series (which also yields the totals)
+// and the top repeated-message groups.
+//
+// Bucketing goes through strftime on a SUBSTRING of the timestamp, not on
+// the column itself: the driver stores time.Time as Go's
+// "2006-01-02 15:04:05.999999999 -0700 MST" (see parseSQLiteTime), and
+// SQLite's date functions return NULL for that trailing " +0000 UTC".
+// The first 19 chars are "YYYY-MM-DD HH:MM:SS", which they do parse, and
+// timestamps are always stored UTC so no offset is lost.
+func (s *sqliteStore) Stats(ctx context.Context, projectID string, f domain.QueryFilter, bucketSeconds int) (*domain.LogStats, error) {
+	if bucketSeconds <= 0 {
+		bucketSeconds = domain.DefaultBucketSeconds
+	}
+	where, args := buildWhereSQLite(projectID, f)
+
+	out := &domain.LogStats{
+		BucketSeconds: bucketSeconds,
+		Series:        []domain.LevelBucket{},
+		Totals:        map[domain.LogLevel]int64{},
+		TopMessages:   []domain.MessageGroup{},
+	}
+
+	// ponytail: newest-first row cap instead of validating range/bucket up
+	// front. 5000 (service-free) group rows is ~700 buckets even with all
+	// seven levels present — far more columns than any chart renders. If a
+	// caller ever needs a longer window, add an explicit 400 on
+	// range/bucket > N rather than raising this.
+	const maxSeriesRows = 5000
+	const bucketExpr = `(CAST(strftime('%s', substr(timestamp, 1, 19)) AS INTEGER) / ? * ?)`
+
+	seriesSQL := "SELECT " + bucketExpr + " AS bucket, level, COUNT(*) FROM log_entries" + where +
+		" GROUP BY bucket, level ORDER BY bucket DESC LIMIT ?"
+	// Placeholders bind in textual order, so the two bucket divisors come
+	// before the WHERE args.
+	seriesArgs := append([]any{bucketSeconds, bucketSeconds}, args...)
+	seriesArgs = append(seriesArgs, maxSeriesRows)
+
+	rows, err := s.reader().QueryContext(ctx, seriesSQL, seriesArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("stats series: %w", err)
+	}
+	defer rows.Close()
+
+	// Rows arrive newest-first and one per (bucket, level); fold them into
+	// one LevelBucket per instant, then flip to ascending for the chart.
+	byBucket := map[int64]map[domain.LogLevel]int64{}
+	var order []int64
+	for rows.Next() {
+		var bucket, count int64
+		var level string
+		if err := rows.Scan(&bucket, &level, &count); err != nil {
+			return nil, err
+		}
+		if _, seen := byBucket[bucket]; !seen {
+			byBucket[bucket] = map[domain.LogLevel]int64{}
+			order = append(order, bucket)
+		}
+		byBucket[bucket][domain.LogLevel(level)] += count
+		out.Totals[domain.LogLevel(level)] += count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	for _, b := range order {
+		out.Series = append(out.Series, domain.LevelBucket{
+			Start:  time.Unix(b, 0).UTC(),
+			Counts: byBucket[b],
+		})
+	}
+
+	topSQL := `SELECT service, level, message, COUNT(*) AS c, MIN(timestamp), MAX(timestamp)
+	           FROM log_entries` + where + `
+	           GROUP BY service, level, message ORDER BY c DESC, MAX(timestamp) DESC LIMIT ?`
+	topRows, err := s.reader().QueryContext(ctx, topSQL, append(append([]any{}, args...), domain.TopMessagesLimit)...)
+	if err != nil {
+		return nil, fmt.Errorf("stats top messages: %w", err)
+	}
+	defer topRows.Close()
+	for topRows.Next() {
+		var g domain.MessageGroup
+		var level, firstStr, lastStr string
+		if err := topRows.Scan(&g.Service, &level, &g.Message, &g.Count, &firstStr, &lastStr); err != nil {
+			return nil, err
+		}
+		g.Level = domain.LogLevel(level)
+		first, err := parseSQLiteTime(firstStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse first_seen %q: %w", firstStr, err)
+		}
+		last, err := parseSQLiteTime(lastStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse last_seen %q: %w", lastStr, err)
+		}
+		g.FirstSeenAt = first.UTC()
+		g.LastSeenAt = last.UTC()
+		out.TopMessages = append(out.TopMessages, g)
+	}
+	return out, topRows.Err()
+}
+
 // parseSQLiteTime parses the time formats modernc.org/sqlite emits for
 // DATETIME columns. When passed a time.Time bound parameter, the driver
 // stores it via Go's time.Time.String() ("2006-01-02 15:04:05.999999999

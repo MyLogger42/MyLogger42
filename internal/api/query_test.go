@@ -39,8 +39,8 @@ func queryTestServer(t *testing.T, projects map[string]*domain.Project) *Server 
 // path, not on the items themselves.
 type fakeLogStore struct{}
 
-func (f *fakeLogStore) Insert(context.Context, domain.LogEntry) error          { return nil }
-func (f *fakeLogStore) InsertBatch(context.Context, []domain.LogEntry) error  { return nil }
+func (f *fakeLogStore) Insert(context.Context, domain.LogEntry) error        { return nil }
+func (f *fakeLogStore) InsertBatch(context.Context, []domain.LogEntry) error { return nil }
 func (f *fakeLogStore) Get(context.Context, string, string) (*domain.LogEntry, error) {
 	return nil, store.ErrNotFound
 }
@@ -49,6 +49,13 @@ func (f *fakeLogStore) Query(context.Context, string, domain.QueryFilter) ([]dom
 }
 func (f *fakeLogStore) Sources(context.Context, string) ([]domain.Source, error) {
 	return []domain.Source{}, nil
+}
+func (f *fakeLogStore) Stats(context.Context, string, domain.QueryFilter, int) (*domain.LogStats, error) {
+	return &domain.LogStats{
+		Series:      []domain.LevelBucket{},
+		Totals:      map[domain.LogLevel]int64{},
+		TopMessages: []domain.MessageGroup{},
+	}, nil
 }
 func (f *fakeLogStore) DeleteOlderThanForProject(context.Context, string, time.Time) (int64, error) {
 	return 0, nil
@@ -166,5 +173,29 @@ func TestGetByIDRequiresProjectParam(t *testing.T) {
 	s.handleGetByID(rr, req, "some-id")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for missing ?project=", rr.Code)
+	}
+}
+
+// TestStatsBucketAllowlist covers the one input /stats adds over /logs.
+// An arbitrary bucket reaches a GROUP BY divisor and a `_time:` pipe, so
+// it is validated at the boundary rather than clamped downstream.
+func TestStatsBucketAllowlist(t *testing.T) {
+	s := queryTestServer(t, map[string]*domain.Project{"auth-svc": {ID: "p1"}})
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"?project=auth-svc", http.StatusOK},            // no bucket = default
+		{"?project=auth-svc&bucket=300", http.StatusOK}, // allowlisted
+		{"?project=auth-svc&bucket=7", http.StatusBadRequest},
+		{"?project=auth-svc&bucket=abc", http.StatusBadRequest},
+		{"?bucket=300", http.StatusBadRequest}, // project still required
+	}
+	for _, tc := range cases {
+		rr := httptest.NewRecorder()
+		s.handleStats(rr, httptest.NewRequest(http.MethodGet, "/api/v1/stats"+tc.query, nil))
+		if rr.Code != tc.want {
+			t.Errorf("%s: status = %d, want %d; body=%s", tc.query, rr.Code, tc.want, rr.Body.String())
+		}
 	}
 }

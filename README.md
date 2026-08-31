@@ -23,6 +23,7 @@ and you read them back in a browser — search, filter, or watch them stream in 
 - 🗂 **Multi-project** — one logical bucket per app, each with its own ingest keys and retention window.
 - 📡 **Live tail** — WebSocket stream, filter by service and level, watch events arrive in real time.
 - 🔍 **Search & filter** — service, level, time range, message substring; metadata shown per entry.
+- 📊 **Activity panel** — level-over-time histogram, per-level totals, and a most-repeated-messages ranking; every panel is a filter control.
 - 🔐 **Locked down** — bcrypt admin login, rate-limited auth, HMAC-fingerprinted ingest keys, per-key revocation.
 - ♻️ **Retention** — background purge worker, per-project overrides, `0` = keep forever.
 - 🐳 **One-command deploy** — `docker compose up`, secrets auto-generated on first boot.
@@ -220,9 +221,32 @@ Search and filter past entries. Filters:
 - **From / To** — datetime range.
 - **Search** — substring match on `message`.
 
+Above the list sits the **Activity** panel, all of it derived from the
+same filter as the list:
+
+- **Histogram** — entries per time bucket, stacked and coloured by
+  level. Pick the bucket size (1m / 5m / 1h / 1d); hover a column for
+  the per-level breakdown; **click a column to filter the list to that
+  window**.
+- **Level totals** — one chip per level with its count. Clicking a chip
+  filters to that level; clicking it again clears the filter. The chips
+  double as the histogram's legend.
+- **Most repeated** — the ten noisiest identical
+  (service, level, message) groups in the range, each with its count and
+  the span it repeated over ("×482 over 3m"). Click a row to filter the
+  list down to that message. This is where a service hammering the same
+  error shows up as one line instead of 482.
+
 Click any row to expand it — you'll see the full metadata JSON, the
 exact RFC3339 timestamp, and the entry ID. Use Previous / Next to
 page through results (50 per page).
+
+Consecutive entries with an identical service, level and message are
+folded into a single row with a `×N` badge; expand it to see the
+individual entries. Matching is exact and adjacent-only, so nothing is
+reordered and nothing that isn't literally the same message is hidden.
+Repeats that are spread out over the range show up in **Most repeated**
+instead. Live tail folds repeats the same way.
 
 ### Live tail
 

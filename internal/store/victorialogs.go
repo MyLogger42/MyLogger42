@@ -325,6 +325,125 @@ func (v *victoriaLogsStore) Sources(ctx context.Context, projectID string) ([]do
 // zero deletions is the honest answer. Per-project retention_days is
 // therefore NOT enforced in this mode — the API surfaces that to the
 // operator rather than silently ignoring the setting.
+// Stats is the LogsQL mirror of the SQLite aggregate: one `stats by
+// (_time:<step>, level)` pipeline for the histogram (and, summed, the
+// totals) plus one `stats by (service, level, _msg)` pipeline for the
+// repeated-message groups.
+//
+// VictoriaLogs aligns `_time:` buckets to the step itself, which is what
+// the conformance suite asserts, and returns every stats field as a
+// string — hence the parse-through-string dance shared with Sources.
+func (v *victoriaLogsStore) Stats(ctx context.Context, projectID string, f domain.QueryFilter, bucketSeconds int) (*domain.LogStats, error) {
+	if bucketSeconds <= 0 {
+		bucketSeconds = domain.DefaultBucketSeconds
+	}
+	filter := buildLogsQL(projectID, f)
+	out := &domain.LogStats{
+		BucketSeconds: bucketSeconds,
+		Series:        []domain.LevelBucket{},
+		Totals:        map[domain.LogLevel]int64{},
+		TopMessages:   []domain.MessageGroup{},
+	}
+
+	seriesPipeline := fmt.Sprintf("%s | stats by (%s:%s, %s) count() rows | sort by (%s)",
+		filter, fieldTime, logsQLStep(bucketSeconds), fieldLevel, fieldTime)
+	if err := v.eachStatsRow(ctx, seriesPipeline, f, func(raw map[string]any) error {
+		level := domain.LogLevel(stringField(raw, fieldLevel))
+		count := int64Field(raw, "rows")
+		start := parseVLogsTime(stringField(raw, fieldTime))
+		// Rows arrive sorted by _time, one per (bucket, level): append a
+		// new column only when the instant changes.
+		if n := len(out.Series); n > 0 && out.Series[n-1].Start.Equal(start) {
+			out.Series[n-1].Counts[level] += count
+		} else {
+			out.Series = append(out.Series, domain.LevelBucket{
+				Start:  start,
+				Counts: map[domain.LogLevel]int64{level: count},
+			})
+		}
+		out.Totals[level] += count
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("vlogs stats series: %w", err)
+	}
+
+	topPipeline := fmt.Sprintf(
+		"%s | stats by (%s, %s, %s) count() rows, min(%s) first_seen, max(%s) last_seen | sort by (rows desc) | limit %d",
+		filter, fieldService, fieldLevel, fieldMsg, fieldTime, fieldTime, domain.TopMessagesLimit)
+	if err := v.eachStatsRow(ctx, topPipeline, f, func(raw map[string]any) error {
+		out.TopMessages = append(out.TopMessages, domain.MessageGroup{
+			Service:     stringField(raw, fieldService),
+			Level:       domain.LogLevel(stringField(raw, fieldLevel)),
+			Message:     stringField(raw, fieldMsg),
+			Count:       int64Field(raw, "rows"),
+			FirstSeenAt: parseVLogsTime(stringField(raw, "first_seen")),
+			LastSeenAt:  parseVLogsTime(stringField(raw, "last_seen")),
+		})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("vlogs stats top messages: %w", err)
+	}
+	return out, nil
+}
+
+// eachStatsRow runs a stats pipeline and hands each ndjson record to fn.
+func (v *victoriaLogsStore) eachStatsRow(ctx context.Context, pipeline string, f domain.QueryFilter, fn func(map[string]any) error) error {
+	resp, err := v.postQuery(ctx, "/select/logsql/query", pipeline, f)
+	if err != nil {
+		return err
+	}
+	defer drainClose(resp)
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var raw map[string]any
+		if err := dec.Decode(&raw); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("decode: %w", err)
+		}
+		if err := fn(raw); err != nil {
+			return err
+		}
+	}
+}
+
+// logsQLStep renders a bucket size as a LogsQL duration. The allowlist in
+// domain keeps this to the four cases below; anything else falls back to
+// plain seconds, which LogsQL also accepts.
+func logsQLStep(seconds int) string {
+	switch seconds {
+	case domain.BucketMinute:
+		return "1m"
+	case domain.BucketFive:
+		return "5m"
+	case domain.BucketHour:
+		return "1h"
+	case domain.BucketDay:
+		return "1d"
+	default:
+		return strconv.Itoa(seconds) + "s"
+	}
+}
+
+// int64Field reads a stats aggregate as an int64. VictoriaLogs sends
+// counts as strings; a JSON number is tolerated in case that changes.
+func int64Field(raw map[string]any, name string) int64 {
+	switch v := raw[name].(type) {
+	case string:
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
 func (v *victoriaLogsStore) DeleteOlderThanForProject(context.Context, string, time.Time) (int64, error) {
 	return 0, nil
 }

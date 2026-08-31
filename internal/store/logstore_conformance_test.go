@@ -376,6 +376,138 @@ func runLogStoreConformance(t *testing.T, newStore func(t *testing.T) LogStore, 
 		}
 	})
 
+	t.Run("Stats", func(t *testing.T) {
+		ctx := context.Background()
+		s := newStore(t)
+		pid, other := nextProjectID(t), nextProjectID(t)
+
+		// Three "redis timeout" repeats is the shape the whole feature
+		// exists for: the list view can only show it as three rows.
+		seed(t, s, []domain.LogEntry{
+			mkEntry(pid, "st1", "api", domain.LevelError, "redis timeout", 0),
+			mkEntry(pid, "st2", "api", domain.LevelError, "redis timeout", 1),
+			mkEntry(pid, "st3", "api", domain.LevelError, "redis timeout", 40),
+			mkEntry(pid, "st4", "api", domain.LevelInfo, "cache miss", 2),
+			mkEntry(pid, "st5", "api", domain.LevelInfo, "cache miss", 3),
+			mkEntry(pid, "st6", "worker", domain.LevelInfo, "boot", 5),
+			mkEntry(other, "st7", "ghost", domain.LevelError, "redis timeout", 0),
+		})
+
+		got, err := s.Stats(ctx, pid, domain.QueryFilter{}, domain.BucketFive)
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		if got == nil {
+			t.Fatal("Stats returned nil stats")
+		}
+		if got.BucketSeconds != domain.BucketFive {
+			t.Errorf("BucketSeconds = %d, want %d", got.BucketSeconds, domain.BucketFive)
+		}
+
+		// Totals: the other project's entry must not leak in.
+		wantTotals := map[domain.LogLevel]int64{domain.LevelError: 3, domain.LevelInfo: 3}
+		if len(got.Totals) != len(wantTotals) {
+			t.Errorf("Totals = %+v, want %+v", got.Totals, wantTotals)
+		}
+		for lvl, want := range wantTotals {
+			if got.Totals[lvl] != want {
+				t.Errorf("Totals[%s] = %d, want %d", lvl, got.Totals[lvl], want)
+			}
+		}
+
+		// Series: bucket starts aligned to the bucket size, ascending, and
+		// summing to the same 6 entries the totals describe. We don't
+		// assert an exact bucket count — baseTime is relative to now, so
+		// the fixtures may straddle a boundary.
+		var sum int64
+		var prev time.Time
+		for i, b := range got.Series {
+			if b.Start.Unix()%int64(domain.BucketFive) != 0 {
+				t.Errorf("series[%d].Start = %s, not aligned to %ds", i, b.Start, domain.BucketFive)
+			}
+			if i > 0 && !b.Start.After(prev) {
+				t.Errorf("series not ascending at %d: %s after %s", i, b.Start, prev)
+			}
+			prev = b.Start
+			for _, c := range b.Counts {
+				sum += c
+			}
+		}
+		if sum != 6 {
+			t.Errorf("series counts sum = %d, want 6", sum)
+		}
+		if len(got.Series) == 0 {
+			t.Error("series is empty")
+		}
+
+		// TopMessages: ranked by count desc, exact (service, level, message).
+		if len(got.TopMessages) != 3 {
+			t.Fatalf("TopMessages = %+v, want 3 groups", got.TopMessages)
+		}
+		top := got.TopMessages[0]
+		if top.Message != "redis timeout" || top.Count != 3 || top.Service != "api" || top.Level != domain.LevelError {
+			t.Errorf("TopMessages[0] = %+v, want api/Error/redis timeout x3", top)
+		}
+		if got.TopMessages[1].Count != 2 || got.TopMessages[2].Count != 1 {
+			t.Errorf("TopMessages not ranked by count desc: %+v", got.TopMessages)
+		}
+		if caps.sourceTimestamps {
+			if !top.FirstSeenAt.Equal(baseTime) {
+				t.Errorf("TopMessages[0].FirstSeenAt = %s, want %s", top.FirstSeenAt, baseTime)
+			}
+			if want := baseTime.Add(40 * time.Minute); !top.LastSeenAt.Equal(want) {
+				t.Errorf("TopMessages[0].LastSeenAt = %s, want %s", top.LastSeenAt, want)
+			}
+		}
+	})
+
+	t.Run("StatsRespectsFilter", func(t *testing.T) {
+		ctx := context.Background()
+		s := newStore(t)
+		pid := nextProjectID(t)
+
+		seed(t, s, []domain.LogEntry{
+			mkEntry(pid, "sf1", "api", domain.LevelError, "boom", 0),
+			mkEntry(pid, "sf2", "api", domain.LevelInfo, "fine", 1),
+			mkEntry(pid, "sf3", "worker", domain.LevelError, "boom", 2),
+		})
+
+		got, err := s.Stats(ctx, pid, domain.QueryFilter{Level: domain.LevelError, Service: "api"}, domain.BucketHour)
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		if got.Totals[domain.LevelInfo] != 0 {
+			t.Errorf("filtered-out level present in totals: %+v", got.Totals)
+		}
+		if got.Totals[domain.LevelError] != 1 {
+			t.Errorf("Totals[Error] = %d, want 1 (service=api only)", got.Totals[domain.LevelError])
+		}
+		if len(got.TopMessages) != 1 || got.TopMessages[0].Service != "api" {
+			t.Errorf("TopMessages ignored the filter: %+v", got.TopMessages)
+		}
+	})
+
+	t.Run("StatsEmptyProjectReturnsEmptyNotNil", func(t *testing.T) {
+		got, err := newStore(t).Stats(context.Background(), nextProjectID(t), domain.QueryFilter{}, 0)
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		if got == nil {
+			t.Fatal("Stats returned nil for an empty project")
+		}
+		// The SPA maps over these without a nil guard.
+		if got.Series == nil || got.TopMessages == nil || got.Totals == nil {
+			t.Fatalf("nil collections on empty project: %+v", got)
+		}
+		if len(got.Series) != 0 || len(got.TopMessages) != 0 || len(got.Totals) != 0 {
+			t.Fatalf("non-empty stats for an empty project: %+v", got)
+		}
+		// bucket 0 means "server default".
+		if got.BucketSeconds != domain.DefaultBucketSeconds {
+			t.Errorf("BucketSeconds = %d, want default %d", got.BucketSeconds, domain.DefaultBucketSeconds)
+		}
+	})
+
 	t.Run("DeleteOlderThanForProject", func(t *testing.T) {
 		if !caps.deletes {
 			t.Skip("backend delegates retention to the engine — documented divergence")

@@ -133,6 +133,20 @@ export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Prop
   );
 }
 
+// rfc3339ToLocal is the inverse of localToRfc3339: it renders an instant
+// as the local-time "YYYY-MM-DDTHH:mm" string an <input
+// type="datetime-local"> expects. Used when the histogram hands a bucket
+// window back to the filter — toISOString() would set the field to UTC
+// and silently shift the range by the user's offset.
+export function rfc3339ToLocal(d: Date): string {
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
 // localToRfc3339 turns the value of an <input type="datetime-local"> —
 // which is a local-time string with no offset — into an RFC3339 UTC
 // string the server can parse. Returns empty string if input is empty.

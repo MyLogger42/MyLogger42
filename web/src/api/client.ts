@@ -8,6 +8,8 @@ import type {
   LogEntry,
   LoginRequest,
   LogsQuery,
+  LogStats,
+  StatsQuery,
   Project,
   ProjectKeysResponse,
   ProjectsResponse,
@@ -123,12 +125,26 @@ async function jsonRequest<T>(
 // --- read endpoints (project-scoped) ----------------------------------
 
 export async function fetchLogs(query: LogsQuery): Promise<QueryResponse> {
+  return jsonRequest<QueryResponse>(`/api/v1/logs?${queryParams(query)}`);
+}
+
+// fetchStats is the aggregate sibling of fetchLogs: same filter params,
+// counts instead of rows. Backs the histogram / totals / top-messages
+// panels in one round trip.
+export async function fetchStats(query: StatsQuery): Promise<LogStats> {
+  return jsonRequest<LogStats>(`/api/v1/stats?${queryParams(query)}`);
+}
+
+// queryParams drops empty values so an unset filter doesn't turn into
+// `service=` (which the server would read as a real, never-matching
+// filter value).
+function queryParams(query: LogsQuery | StatsQuery): string {
   const params = new URLSearchParams();
-  for (const [k, v] of Object.entries(query)) {
+  for (const [k, v] of Object.entries(query as Record<string, unknown>)) {
     if (v === undefined || v === null || v === '') continue;
     params.set(k, String(v));
   }
-  return jsonRequest<QueryResponse>(`/api/v1/logs?${params.toString()}`);
+  return params.toString();
 }
 
 export async function fetchLogById(projectSlug: string, id: string): Promise<LogEntry> {
