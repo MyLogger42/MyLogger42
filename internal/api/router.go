@@ -27,6 +27,7 @@ type Server struct {
 	staticFS     fs.FS // optional embedded SPA assets
 	pepper       []byte
 	usage        *lastUsedThrottle
+	authCache    *authCache
 	loginLimiter *loginRateLimiter
 	trustProxy   bool
 	signer       *auth.SessionSigner
@@ -85,6 +86,7 @@ func NewServer(cfg Config) *Server {
 		staticFS:     cfg.StaticFS,
 		pepper:       cfg.Pepper,
 		usage:        newLastUsedThrottle(cfg.Keys),
+		authCache:    newAuthCache(authCacheTTL),
 		loginLimiter: newLoginRateLimiter(),
 		trustProxy:   cfg.TrustForwardedProto,
 		signer:       cfg.Signer,
@@ -124,7 +126,7 @@ func (s *Server) Routes() http.Handler {
 	// Ingest endpoints — protected by the project-key middleware.
 	// requireProjectKey resolves X-API-Key → Project, attaches it to ctx,
 	// and rejects archived projects with 403.
-	ingestAuth := requireProjectKey(s.keys, s.projects, s.pepper, s.usage)
+	ingestAuth := requireProjectKey(s.keys, s.projects, s.pepper, s.usage, s.authCache)
 	mux.Handle("POST /api/v1/logs", ingestAuth(http.HandlerFunc(s.handleIngestSingle)))
 	mux.Handle("POST /api/v1/logs/batch", ingestAuth(http.HandlerFunc(s.handleIngestBatch)))
 

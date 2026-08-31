@@ -139,6 +139,9 @@ func (s *Server) issueKeyForProject(r *http.Request, projectID, label string) (i
 	if err := s.keys.Create(r.Context(), rec, hexHMAC); err != nil {
 		return issuedKeyDTO{}, err
 	}
+	// A cached miss for this prefix would otherwise reject the new key
+	// until the TTL lapsed.
+	s.authCache.invalidateAll()
 	return issuedKeyDTO{
 		ID:        rec.ID,
 		Prefix:    rec.Prefix,
@@ -297,6 +300,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+	s.authCache.invalidateAll()
 	writeJSON(w, http.StatusOK, projectFromDomain(updated))
 }
 
@@ -319,6 +323,8 @@ func (s *Server) handleArchiveProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+	// Archived projects must stop accepting ingest immediately.
+	s.authCache.invalidateAll()
 	writeJSON(w, http.StatusOK, projectFromDomain(updated))
 }
 
@@ -342,6 +348,7 @@ func (s *Server) handleUnarchiveProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+	s.authCache.invalidateAll()
 	writeJSON(w, http.StatusOK, projectFromDomain(updated))
 }
 
@@ -437,6 +444,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrNotFound) {
 			// Race: row vanished between lookup and revoke. Treat as
 			// success — the desired state (no active key) holds.
+			s.authCache.invalidateAll()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -444,5 +452,8 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
+	// The revoked key must be rejected on the very next ingest call,
+	// not once the TTL lapses.
+	s.authCache.invalidateAll()
 	w.WriteHeader(http.StatusNoContent)
 }

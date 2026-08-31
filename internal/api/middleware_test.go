@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,12 +26,17 @@ type fakeKeyStore struct {
 		hmac string
 	}
 	notes []string // keyIDs noted via NoteUsage
+
+	// lookups counts GetActiveByPrefix calls so the cache tests can
+	// assert DB round trips were actually avoided.
+	lookups int
 }
 
 func (f *fakeKeyStore) Create(context.Context, domain.ProjectKey, string) error {
 	return store.ErrNotFound
 }
 func (f *fakeKeyStore) GetActiveByPrefix(_ context.Context, prefix string) (*domain.ProjectKey, string, error) {
+	f.lookups++
 	rec, ok := f.prefixes[prefix]
 	if !ok {
 		return nil, "", store.ErrNotFound
@@ -51,6 +57,9 @@ func (f *fakeKeyStore) NoteUsage(_ context.Context, id string, _ time.Time) erro
 
 type fakeProjectStore struct {
 	byID map[string]*domain.Project
+	// lookups counts GetByID calls, the second of the two queries the
+	// auth cache exists to remove.
+	lookups int
 }
 
 func (f *fakeProjectStore) Create(context.Context, domain.Project) error      { return store.ErrNotFound }
@@ -58,6 +67,7 @@ func (f *fakeProjectStore) GetBySlug(context.Context, string) (*domain.Project, 
 	return nil, store.ErrNotFound
 }
 func (f *fakeProjectStore) GetByID(_ context.Context, id string) (*domain.Project, error) {
+	f.lookups++
 	p, ok := f.byID[id]
 	if !ok {
 		return nil, store.ErrNotFound
@@ -88,6 +98,7 @@ func setupProjectKeyMW(t *testing.T) (
 	*fakeProjectStore,
 	*lastUsedThrottle,
 	[]byte, // pepper
+	*authCache,
 ) {
 	t.Helper()
 	pepper := []byte("pepper")
@@ -121,12 +132,13 @@ func setupProjectKeyMW(t *testing.T) (
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	mw := requireProjectKey(keys, projects, pepper, usage)(downstream)
-	return mw, keys, projects, usage, pepper
+	cache := newAuthCache(authCacheTTL)
+	mw := requireProjectKey(keys, projects, pepper, usage, cache)(downstream)
+	return mw, keys, projects, usage, pepper, cache
 }
 
 func TestRequireProjectKeyHappyPath(t *testing.T) {
-	mw, keys, _, usage, _ := setupProjectKeyMW(t)
+	mw, keys, _, usage, _, _ := setupProjectKeyMW(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/logs", nil)
 	req.Header.Set("X-API-Key", "mlk_abcdefghijkl_zyxwvutsrqponmlkjihgfedcba234567")
@@ -145,7 +157,7 @@ func TestRequireProjectKeyHappyPath(t *testing.T) {
 }
 
 func TestRequireProjectKeyMalformed(t *testing.T) {
-	mw, _, _, _, _ := setupProjectKeyMW(t)
+	mw, _, _, _, _, _ := setupProjectKeyMW(t)
 
 	for _, bad := range []string{"", "garbage", "mlk_short_x", "wrong_prefix_secret"} {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/logs", nil)
@@ -159,7 +171,7 @@ func TestRequireProjectKeyMalformed(t *testing.T) {
 }
 
 func TestRequireProjectKeyUnknownPrefix(t *testing.T) {
-	mw, _, _, _, _ := setupProjectKeyMW(t)
+	mw, _, _, _, _, _ := setupProjectKeyMW(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/logs", nil)
 	// Right shape, prefix not in the fake's map.
@@ -172,7 +184,7 @@ func TestRequireProjectKeyUnknownPrefix(t *testing.T) {
 }
 
 func TestRequireProjectKeyWrongSecret(t *testing.T) {
-	mw, _, _, _, _ := setupProjectKeyMW(t)
+	mw, _, _, _, _, _ := setupProjectKeyMW(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/logs", nil)
 	// Right prefix, wrong secret (still 32 base32-lowercase chars).
@@ -185,7 +197,7 @@ func TestRequireProjectKeyWrongSecret(t *testing.T) {
 }
 
 func TestRequireProjectKeyArchivedProject(t *testing.T) {
-	mw, _, projects, _, _ := setupProjectKeyMW(t)
+	mw, _, projects, _, _, _ := setupProjectKeyMW(t)
 	// Archive the project after setup.
 	now := time.Now().UTC()
 	projects.byID["proj-1"].ArchivedAt = &now
@@ -323,5 +335,135 @@ func TestLastUsedThrottleNoteAndFlush(t *testing.T) {
 	t1.flush(context.Background())
 	if len(keys.notes) != 2 {
 		t.Fatalf("second flush wrote extra: %d", len(keys.notes))
+	}
+}
+
+// --- auth cache -------------------------------------------------------
+
+const (
+	validKey   = "mlk_abcdefghijkl_zyxwvutsrqponmlkjihgfedcba234567"
+	unknownKey = "mlk_zzzzzzzzzzzz_zyxwvutsrqponmlkjihgfedcba234567"
+)
+
+// ingest fires one request through the middleware and returns the status.
+func ingest(t *testing.T, mw http.Handler, apiKey string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/logs", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func TestAuthCacheAvoidsRepeatLookups(t *testing.T) {
+	mw, keys, projects, _, _, _ := setupProjectKeyMW(t)
+
+	for i := 0; i < 5; i++ {
+		if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+			t.Fatalf("request %d: status = %d, want 204", i, got)
+		}
+	}
+	// Two queries total, not two per request.
+	if keys.lookups != 1 {
+		t.Errorf("key lookups = %d, want 1", keys.lookups)
+	}
+	if projects.lookups != 1 {
+		t.Errorf("project lookups = %d, want 1", projects.lookups)
+	}
+}
+
+// A hit-only cache would make an unknown prefix measurably slower than a
+// known one, which is a prefix-existence oracle. Misses must be cached too.
+func TestAuthCacheCachesMisses(t *testing.T) {
+	mw, keys, _, _, _, _ := setupProjectKeyMW(t)
+
+	for i := 0; i < 5; i++ {
+		if got := ingest(t, mw, unknownKey); got != http.StatusUnauthorized {
+			t.Fatalf("request %d: status = %d, want 401", i, got)
+		}
+	}
+	if keys.lookups != 1 {
+		t.Errorf("key lookups for unknown prefix = %d, want 1 (misses must be cached)", keys.lookups)
+	}
+}
+
+// The cache stores facts, not verdicts: a wrong secret on a cached prefix
+// must still fail the HMAC compare.
+func TestAuthCacheStillVerifiesHMAC(t *testing.T) {
+	mw, _, _, _, _, _ := setupProjectKeyMW(t)
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+	wrongSecret := "mlk_abcdefghijkl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if got := ingest(t, mw, wrongSecret); got != http.StatusUnauthorized {
+		t.Fatalf("wrong secret on cached prefix: status = %d, want 401", got)
+	}
+}
+
+func TestAuthCacheExpires(t *testing.T) {
+	mw, keys, _, _, _, cache := setupProjectKeyMW(t)
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+	// Force expiry rather than sleeping for the real TTL.
+	cache.mu.Lock()
+	for k, e := range cache.entries {
+		e.expiresAt = time.Now().Add(-time.Second)
+		cache.entries[k] = e
+	}
+	cache.mu.Unlock()
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("post-expiry request: status = %d, want 204", got)
+	}
+	if keys.lookups != 2 {
+		t.Errorf("key lookups = %d, want 2 (entry should have expired)", keys.lookups)
+	}
+}
+
+// Revocation must take effect on the very next request, not after the TTL.
+func TestAuthCacheInvalidateAllHonoursRevocation(t *testing.T) {
+	mw, keys, _, _, _, cache := setupProjectKeyMW(t)
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+	// Revoke: GetActiveByPrefix stops returning the key.
+	delete(keys.prefixes, "abcdefghijkl")
+	cache.invalidateAll()
+
+	if got := ingest(t, mw, validKey); got != http.StatusUnauthorized {
+		t.Fatalf("after revoke+invalidate: status = %d, want 401", got)
+	}
+}
+
+// Archiving is re-checked per request, so it takes effect even while the
+// project is still cached.
+func TestAuthCacheArchivedProjectRejectedWhileCached(t *testing.T) {
+	mw, _, projects, _, _, _ := setupProjectKeyMW(t)
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+	archived := time.Now().UTC()
+	projects.byID["proj-1"].ArchivedAt = &archived
+
+	if got := ingest(t, mw, validKey); got != http.StatusForbidden {
+		t.Fatalf("archived project served from cache: status = %d, want 403", got)
+	}
+}
+
+func TestAuthCacheBoundsEntries(t *testing.T) {
+	cache := newAuthCache(authCacheTTL)
+	for i := 0; i < authCacheMaxEntries+100; i++ {
+		cache.putMiss(fmt.Sprintf("prefix-%d", i))
+	}
+	cache.mu.RLock()
+	n := len(cache.entries)
+	cache.mu.RUnlock()
+	if n > authCacheMaxEntries {
+		t.Fatalf("cache holds %d entries, want <= %d", n, authCacheMaxEntries)
 	}
 }

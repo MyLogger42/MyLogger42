@@ -21,8 +21,32 @@ import (
 
 // sqliteStore is the SQLite-backed LogStore. We use modernc.org/sqlite —
 // pure Go, no CGo — so the binary builds and runs without a C toolchain.
+//
+// Two handles, deliberately:
+//
+//   - db  is the WRITE handle, capped at one connection. SQLite allows
+//     exactly one writer, so a bigger pool would only produce SQLITE_BUSY.
+//   - rdb is the READ pool. WAL gives readers a consistent snapshot that
+//     doesn't block (or get blocked by) the writer, so reads scale with
+//     cores. Before this split, one `LIKE '%x%'` scan holding the single
+//     shared connection stalled ingest completely: measured 41ms per
+//     insert under concurrent search load versus 69µs idle.
+//
+// rdb may be nil — for in-memory DSNs a second handle would open a
+// different, empty database, so reads fall back to db there. Use
+// reader() rather than touching rdb directly.
 type sqliteStore struct {
-	db *sql.DB
+	db  *sql.DB
+	rdb *sql.DB
+}
+
+// reader returns the handle read queries should use. Falls back to the
+// write handle when no read pool exists (in-memory DSNs).
+func (s *sqliteStore) reader() *sql.DB {
+	if s.rdb != nil {
+		return s.rdb
+	}
+	return s.db
 }
 
 // OpenSQLite opens a SQLite database at the given path and applies any
@@ -45,12 +69,12 @@ func OpenSQLite(ctx context.Context, dsn string) (LogStore, error) {
 	// modernc.org/sqlite registers itself under the name "sqlite". We
 	// append pragmas so writes are durable but not painfully slow, and
 	// foreign keys behave intuitively.
-	connStr := dsn + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", connStr)
+	db, err := sql.Open("sqlite", sqliteDSN(dsn, false))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// SQLite handles concurrent reads but only one writer; cap accordingly.
+	// SQLite allows exactly one writer; a larger pool here would only
+	// manufacture SQLITE_BUSY. Reads go to the separate pool below.
 	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
@@ -60,7 +84,64 @@ func OpenSQLite(ctx context.Context, dsn string) (LogStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
-	return &sqliteStore{db: db}, nil
+
+	store := &sqliteStore{db: db}
+
+	// Read pool. Opened only after migrations, so the file and its
+	// -wal/-shm siblings exist. Skipped for in-memory DSNs: a second
+	// handle to ":memory:" is a different, empty database.
+	if !isMemoryDSN(dsn) {
+		rdb, err := sql.Open("sqlite", sqliteDSN(dsn, true))
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open sqlite read pool: %w", err)
+		}
+		rdb.SetMaxOpenConns(readPoolSize)
+		rdb.SetMaxIdleConns(readPoolSize)
+		if err := rdb.PingContext(ctx); err != nil {
+			_ = rdb.Close()
+			_ = db.Close()
+			return nil, fmt.Errorf("ping sqlite read pool: %w", err)
+		}
+		store.rdb = rdb
+	}
+	return store, nil
+}
+
+// readPoolSize caps concurrent readers. WAL readers don't contend with
+// each other or with the writer, so this is really a bound on memory and
+// goroutines rather than a correctness knob.
+//
+// ponytail: fixed size; make it configurable only if a deployment shows
+// readers queueing.
+const readPoolSize = 4
+
+// isMemoryDSN reports whether dsn addresses an in-memory database, which
+// cannot be shared across two sql.DB handles.
+func isMemoryDSN(dsn string) bool {
+	return strings.HasPrefix(dsn, ":memory:") || strings.HasPrefix(dsn, "file::memory:") ||
+		strings.Contains(dsn, "mode=memory")
+}
+
+// sqliteDSN appends our connection pragmas to dsn, respecting any query
+// string the caller already supplied (the in-memory form
+// "file::memory:?cache=shared" carries one). Pragmas are per-connection
+// apart from journal_mode, which lives in the file header — so both the
+// write handle and every read-pool connection must set them.
+//
+// readOnly adds query_only, which makes the read pool structurally unable
+// to write. We use the pragma rather than a "mode=ro" URI because mode=ro
+// requires the file: URI form and is fussier about WAL sidecar files.
+func sqliteDSN(dsn string, readOnly bool) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	pragmas := "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	if readOnly {
+		pragmas += "&_pragma=query_only(1)"
+	}
+	return dsn + sep + pragmas
 }
 
 // runMigrations applies the SQLite migration scripts in lexicographic
@@ -156,7 +237,7 @@ func (s *sqliteStore) InsertBatch(ctx context.Context, entries []domain.LogEntry
 func (s *sqliteStore) Get(ctx context.Context, projectID, id string) (*domain.LogEntry, error) {
 	const q = `SELECT id, project_id, service, level, message, timestamp, received_at, metadata
 	           FROM log_entries WHERE project_id = ? AND id = ?`
-	row := s.db.QueryRowContext(ctx, q, projectID, id)
+	row := s.reader().QueryRowContext(ctx, q, projectID, id)
 	e, err := scanRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -208,7 +289,7 @@ func (s *sqliteStore) Query(ctx context.Context, projectID string, f domain.Quer
 	// same WHERE clause for consistency.
 	var total int
 	countSQL := "SELECT COUNT(*) FROM log_entries" + where
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count: %w", err)
 	}
 
@@ -228,7 +309,7 @@ func (s *sqliteStore) Query(ctx context.Context, projectID string, f domain.Quer
 		"SELECT id, project_id, service, level, message, timestamp, received_at, metadata FROM log_entries%s ORDER BY timestamp %s, id %s LIMIT ? OFFSET ?",
 		where, order, order,
 	)
-	rows, err := s.db.QueryContext(ctx, listSQL, append(append([]any{}, args...), limit, offset)...)
+	rows, err := s.reader().QueryContext(ctx, listSQL, append(append([]any{}, args...), limit, offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query: %w", err)
 	}
@@ -282,7 +363,7 @@ func (s *sqliteStore) Sources(ctx context.Context, projectID string) ([]domain.S
 	const q = `SELECT service, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen, COUNT(*) AS total
 	           FROM log_entries WHERE project_id = ?
 	           GROUP BY service ORDER BY service ASC`
-	rows, err := s.db.QueryContext(ctx, q, projectID)
+	rows, err := s.reader().QueryContext(ctx, q, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -339,13 +420,42 @@ func parseSQLiteTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognised time format: %s", s)
 }
 
+// retentionChunk bounds how many rows one DELETE statement removes. The
+// write handle is a single connection shared with ingest, so an unbounded
+// `DELETE FROM log_entries WHERE received_at < ?` over millions of rows
+// holds it for the whole purge and stalls every incoming log. Chunking
+// hands the connection back between statements.
+const retentionChunk = 5000
+
 func (s *sqliteStore) DeleteOlderThanForProject(ctx context.Context, projectID string, cutoff time.Time) (int64, error) {
-	const q = `DELETE FROM log_entries WHERE project_id = ? AND received_at < ?`
-	res, err := s.db.ExecContext(ctx, q, projectID, cutoff.UTC())
-	if err != nil {
-		return 0, err
+	// The subquery is what LIMITs the delete — SQLite only supports
+	// `DELETE ... LIMIT` when built with SQLITE_ENABLE_UPDATE_DELETE_LIMIT,
+	// which this driver is not.
+	const q = `DELETE FROM log_entries WHERE id IN (
+	               SELECT id FROM log_entries
+	               WHERE project_id = ? AND received_at < ?
+	               LIMIT ?
+	           )`
+	var total int64
+	for {
+		// Stop between chunks rather than mid-purge on shutdown; rows
+		// already deleted stay deleted, and the next sweep resumes.
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		res, err := s.db.ExecContext(ctx, q, projectID, cutoff.UTC(), retentionChunk)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < retentionChunk {
+			return total, nil
+		}
 	}
-	return res.RowsAffected()
 }
 
 func (s *sqliteStore) Ping(ctx context.Context) error {
@@ -353,5 +463,11 @@ func (s *sqliteStore) Ping(ctx context.Context) error {
 }
 
 func (s *sqliteStore) Close() error {
-	return s.db.Close()
+	// Both handles, or the read pool leaks — main.go only ever calls
+	// Close on the LogStore facet.
+	var rerr error
+	if s.rdb != nil {
+		rerr = s.rdb.Close()
+	}
+	return errors.Join(rerr, s.db.Close())
 }

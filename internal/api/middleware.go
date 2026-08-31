@@ -71,11 +71,18 @@ func SessionFromContext(ctx context.Context) (*auth.Claims, bool) {
 //
 // We intentionally do NOT short-circuit on the prefix-lookup miss to
 // avoid a timing oracle. See FakeVerifyForTimingParity in internal/auth.
+//
+// The lookups are fronted by an authCache. Note what the cache does NOT
+// skip: the HMAC compare still runs on every request (a cache hit saves
+// the two DB round trips, never the crypto), misses are cached too so an
+// unknown prefix stays as fast as a known one, and the archived-project
+// check is re-evaluated on every request rather than baked into the entry.
 func requireProjectKey(
 	keys store.KeyStore,
 	projects store.ProjectStore,
 	pepper []byte,
 	usage *lastUsedThrottle,
+	cache *authCache,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,18 +94,48 @@ func requireProjectKey(
 			}
 
 			ctx := r.Context()
-			rec, storedHMAC, lookupErr := keys.GetActiveByPrefix(ctx, prefix)
-			if errors.Is(lookupErr, store.ErrNotFound) {
-				// Burn equivalent CPU so timing doesn't reveal "no such
-				// prefix" vs "wrong secret".
-				auth.FakeVerifyForTimingParity(pepper)
-				writeError(w, http.StatusUnauthorized, "invalid api key")
-				return
+
+			var (
+				rec        *domain.ProjectKey
+				storedHMAC string
+				project    *domain.Project
+				known      bool
+			)
+			if cached, hit := cache.get(prefix); hit {
+				if !cached.known {
+					// Cached miss. Same work as a live miss so the two
+					// are indistinguishable by timing.
+					auth.FakeVerifyForTimingParity(pepper)
+					writeError(w, http.StatusUnauthorized, "invalid api key")
+					return
+				}
+				rec, storedHMAC, project, known = cached.key, cached.hmac, cached.project, true
 			}
-			if lookupErr != nil {
-				// Storage error — log and fail closed.
-				writeError(w, http.StatusInternalServerError, "storage error")
-				return
+
+			if !known {
+				var lookupErr error
+				rec, storedHMAC, lookupErr = keys.GetActiveByPrefix(ctx, prefix)
+				if errors.Is(lookupErr, store.ErrNotFound) {
+					cache.putMiss(prefix)
+					// Burn equivalent CPU so timing doesn't reveal "no such
+					// prefix" vs "wrong secret".
+					auth.FakeVerifyForTimingParity(pepper)
+					writeError(w, http.StatusUnauthorized, "invalid api key")
+					return
+				}
+				if lookupErr != nil {
+					// Storage error — log and fail closed. Never cached.
+					writeError(w, http.StatusInternalServerError, "storage error")
+					return
+				}
+				project, err = projects.GetByID(ctx, rec.ProjectID)
+				if err != nil {
+					// A FK constraint guarantees the row exists; if we hit
+					// this, the DB is in an unexpected state.
+					writeError(w, http.StatusInternalServerError, "storage error")
+					return
+				}
+				cache.putHit(prefix, rec, storedHMAC, project)
 			}
 
 			if !auth.VerifyKey(pepper, secret, storedHMAC) {
@@ -106,13 +143,8 @@ func requireProjectKey(
 				return
 			}
 
-			project, err := projects.GetByID(ctx, rec.ProjectID)
-			if err != nil {
-				// A FK constraint guarantees the row exists; if we hit
-				// this, the DB is in an unexpected state.
-				writeError(w, http.StatusInternalServerError, "storage error")
-				return
-			}
+			// Checked per-request, not cached as a verdict: archiving a
+			// project must stop ingest on the very next call.
 			if project.ArchivedAt != nil {
 				writeError(w, http.StatusForbidden, "project archived")
 				return
@@ -132,6 +164,95 @@ func requireProjectKey(
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// --- ingest auth cache ------------------------------------------------
+//
+// Ingest auth cost two DB queries per log before this: one to resolve the
+// key by prefix, one to resolve its project. At any real ingest rate that
+// dominated the write path, and on SQLite it contended with the single
+// write connection.
+//
+// Three properties worth keeping when editing this:
+//
+//  1. Misses are cached as well as hits. A hit-only cache would make a
+//     known prefix measurably faster than an unknown one, handing an
+//     attacker a prefix-existence oracle — precisely what
+//     FakeVerifyForTimingParity exists to prevent.
+//  2. The cache stores facts (this key, this hmac, this project), never
+//     verdicts. VerifyKey and the archived check still run per request.
+//  3. Correctness does not depend on the TTL. Admin mutations invalidate
+//     explicitly, so the TTL is only a backstop for changes made outside
+//     this process (e.g. the admin CLI).
+
+// cachedAuth is one resolved prefix. known=false is a cached miss.
+type cachedAuth struct {
+	known     bool
+	key       *domain.ProjectKey
+	hmac      string
+	project   *domain.Project
+	expiresAt time.Time
+}
+
+// authCacheTTL bounds staleness for mutations this process didn't make —
+// the `mylogger42 admin` CLI writes to the same DB from another process.
+const authCacheTTL = 60 * time.Second
+
+// authCacheMaxEntries caps memory. Because misses are cached, an attacker
+// spraying random prefixes would otherwise grow the map without bound.
+const authCacheMaxEntries = 10_000
+
+type authCache struct {
+	mu      sync.RWMutex
+	ttl     time.Duration
+	entries map[string]cachedAuth
+}
+
+func newAuthCache(ttl time.Duration) *authCache {
+	return &authCache{ttl: ttl, entries: make(map[string]cachedAuth)}
+}
+
+func (c *authCache) get(prefix string) (cachedAuth, bool) {
+	c.mu.RLock()
+	e, ok := c.entries[prefix]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(e.expiresAt) {
+		return cachedAuth{}, false
+	}
+	return e, true
+}
+
+func (c *authCache) putHit(prefix string, k *domain.ProjectKey, hmac string, p *domain.Project) {
+	c.put(prefix, cachedAuth{known: true, key: k, hmac: hmac, project: p})
+}
+
+func (c *authCache) putMiss(prefix string) {
+	c.put(prefix, cachedAuth{known: false})
+}
+
+func (c *authCache) put(prefix string, e cachedAuth) {
+	e.expiresAt = time.Now().Add(c.ttl)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// ponytail: drop everything at the cap instead of tracking LRU. The
+	// cache refills in one request per active key; swap in an LRU only if
+	// a deployment shows thrashing.
+	if len(c.entries) >= authCacheMaxEntries {
+		c.entries = make(map[string]cachedAuth)
+	}
+	c.entries[prefix] = e
+}
+
+// invalidateAll drops every entry. Called after any admin mutation that
+// could change a key or project.
+//
+// ponytail: whole-map invalidation rather than a keyID→prefix reverse
+// index. Admin writes are rare and the cache refills in one request; the
+// index would be more state to keep correct for no measurable gain.
+func (c *authCache) invalidateAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]cachedAuth)
 }
 
 // lastUsedThrottle keeps an in-memory map of "the last time we wrote
