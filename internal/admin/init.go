@@ -91,6 +91,10 @@ func runInit(ctx context.Context, in io.Reader, out, errw io.Writer, dbCfg Confi
 	// still hand-edit .env after.
 	dotenv.SetIfMissing("DB_DRIVER", "sqlite")
 	dotenv.SetIfMissing("DB_DSN", "./data/mylogger42.db")
+	// Seeded even under the default sqlite driver so switching to
+	// DB_DRIVER=victorialogs is a one-line edit with the companion
+	// setting already visible in .env.
+	dotenv.SetIfMissing("VLOGS_URL", "http://localhost:9428")
 	dotenv.SetIfMissing("HTTP_PORT", "8080")
 	dotenv.SetIfMissing("RETENTION_DAYS", "30")
 	dotenv.SetIfMissing("LOG_LEVEL", "info")
@@ -158,6 +162,7 @@ func runInit(ctx context.Context, in io.Reader, out, errw io.Writer, dbCfg Confi
 	keyValue, err := createFirstProject(ctx, pp, errw, Config{
 		DBDriver:  dotenv.Get("DB_DRIVER"),
 		DBDSN:     dotenv.Get("DB_DSN"),
+		VLogsURL:  dotenv.Get("VLOGS_URL"),
 		KeyPepper: pepper,
 	})
 	if err != nil {

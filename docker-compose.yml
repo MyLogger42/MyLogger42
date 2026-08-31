@@ -11,15 +11,47 @@ services:
       # Only used on first boot to seed the admin user — ignored after that.
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      # Storage
+      # Storage.
+      #   DB_DRIVER=sqlite       -> everything in one file, no other container.
+      #   DB_DRIVER=victorialogs -> logs go to the vlogs service below;
+      #                             users/projects/keys stay in DB_DSN.
+      # The victorialogs mode also needs the compose profile:
+      #   DB_DRIVER=victorialogs docker compose --profile victorialogs up -d
+      DB_DRIVER: ${DB_DRIVER:-sqlite}
       DB_DSN: /app/data/mylogger42.db
+      VLOGS_URL: http://vlogs:9428
       # Operational
       HTTP_PORT: "8080"
-      RETENTION_DAYS: "30"
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
       LOG_LEVEL: info
       TRUST_FORWARDED_PROTO: "true"
     volumes:
       - mylogger42-data:/app/data
+    # No depends_on: vlogs — it would break the default sqlite profile,
+    # where that service doesn't exist. The server pings its log store at
+    # boot and exits if it's unreachable; `restart: unless-stopped` then
+    # retries until vlogs is accepting connections.
+
+  vlogs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: mylogger42-vlogs
+    profiles: ["victorialogs"]
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/vlogs-data"
+      # VictoriaLogs retention is GLOBAL — it has no per-project or
+      # per-stream window, and no delete API. Per-project retention_days
+      # is not enforced in this mode; the UI says so next to the field.
+      - "-retentionPeriod=${RETENTION_DAYS:-30}d"
+    volumes:
+      - vlogs-data:/vlogs-data
+    # Deliberately no published ports: VictoriaLogs ships no
+    # authentication of its own (its docs recommend fronting it with
+    # vmauth), so it stays reachable only from the compose network.
+    #
+    # No healthcheck either: the image is built FROM scratch and has no
+    # shell or wget, so any CMD probe would report permanently unhealthy.
 
 volumes:
   mylogger42-data:
+  vlogs-data:

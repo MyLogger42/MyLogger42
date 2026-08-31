@@ -234,7 +234,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"storage":  s.driver,
 		"uptime":   uptime,
 		"projects": projectCount,
+		// Lets the SPA tell the operator when a per-project setting
+		// isn't actually enforced by the active backend.
+		"capabilities": map[string]any{
+			"perProjectRetention": s.perProjectRetention(),
+		},
 	})
+}
+
+// perProjectRetention reports whether the active log backend can enforce
+// a per-project retention window.
+//
+// SQLite deletes rows per project. VictoriaLogs has no delete API and one
+// global -retentionPeriod, so retention_days is accepted and stored there
+// but never applied — the UI says so rather than letting the setting look
+// effective.
+func (s *Server) perProjectRetention() bool {
+	return store.Driver(s.driver) != store.DriverVictoriaLogs
 }
 
 // handleStream upgrades the HTTP connection to a WebSocket and

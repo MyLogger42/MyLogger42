@@ -26,7 +26,7 @@ and you read them back in a browser — search, filter, or watch them stream in 
 - 🔐 **Locked down** — bcrypt admin login, rate-limited auth, HMAC-fingerprinted ingest keys, per-key revocation.
 - ♻️ **Retention** — background purge worker, per-project overrides, `0` = keep forever.
 - 🐳 **One-command deploy** — `docker compose up`, secrets auto-generated on first boot.
-- 🐘 **Postgres optional** — SQLite by default, switch with two env vars.
+- 🚀 **VictoriaLogs optional** — SQLite by default; switch the log engine with two env vars when one file stops being enough.
 
 ---
 
@@ -63,7 +63,7 @@ internally. Prefer running the binary directly? See
 ```mermaid
 flowchart LR
     app["your app<br/>(any language)"] -- "POST /api/v1/logs<br/>X-API-Key: mlk_…" --> server["mylogger42<br/>single Go binary<br/>+ embedded UI"]
-    server --- db[("SQLite / Postgres")]
+    server --- db[("SQLite / VictoriaLogs")]
     browser["browser · localhost:8080<br/>search · filter · live tail"] <--> server
 ```
 
@@ -369,17 +369,45 @@ The SQLite database and the generated secrets file are stored on the
 down` — only `docker compose down -v` removes it (taking your data
 with it).
 
-### Switching to Postgres
+### Switching the log engine to VictoriaLogs
 
-Add `DB_DRIVER` and `DB_DSN` to your local `.env`:
+SQLite is the default and needs nothing else running. When log volume
+outgrows it, move **only the logs** to [VictoriaLogs][vlogs] — a
+purpose-built log engine with heavy compression and indexed search.
+Users, projects and ingest keys stay in SQLite, so this is still a
+two-container deployment with no database server to administer.
 
 ```
-DB_DRIVER=postgres
-DB_DSN=postgres://user:pass@host:5432/mylogger42?sslmode=disable
+DB_DRIVER=victorialogs
+VLOGS_URL=http://vlogs:9428
+DB_DSN=/app/data/mylogger42.db   # unchanged — still holds the metadata
 ```
 
-No migration step needed — the binary applies migrations automatically
-on startup.
+Then start the extra container via its Compose profile:
+
+```bash
+DB_DRIVER=victorialogs docker compose --profile victorialogs up -d
+```
+
+The REST API and UI are identical in both modes. Three differences are
+worth knowing before you switch:
+
+| | SQLite | VictoriaLogs |
+| :--- | :--- | :--- |
+| `search=` matching | substring — `imeou` finds `timeout` | case-insensitive **phrase** — `imeou` does not |
+| Per-project `retentionDays` | enforced | **not enforced** — the engine has one global window, set by `RETENTION_DAYS`. The UI flags the field. |
+| Logs older than retention | stored | **silently discarded at ingest**, with a `201` still returned to the client |
+
+That last one is a property of VictoriaLogs, not of this server: it
+refuses entries whose timestamp predates `-retentionPeriod` and reports
+the drop only in its own log. If you backfill old logs, raise
+`RETENTION_DAYS` to cover the oldest timestamp you send.
+
+Switching engines does not migrate existing logs — logs already in
+SQLite stay there. Metadata (users, projects, keys) is untouched either
+way, so you can switch back by unsetting `DB_DRIVER`.
+
+[vlogs]: https://docs.victoriametrics.com/victorialogs/
 
 ---
 
@@ -420,9 +448,10 @@ the proxy.
 | `ADMIN_USERNAME`        | first start only  | —                        | Bootstraps the admin user when the `users` table is empty.                                                 |
 | `ADMIN_PASSWORD`        | first start only  | —                        | **Docker only.** Plaintext password — the entrypoint hashes it before the server starts.                   |
 | `ADMIN_PASSWORD_HASH`   | first start only  | —                        | **Local dev only.** Pre-computed bcrypt hash. Generate with `admin hash-password`.                         |
-| `DB_DRIVER`             | no                | `sqlite`                 | `sqlite` or `postgres`.                                                                                    |
-| `DB_DSN`                | no                | `./data/mylogger42.db`   | Filesystem path or libpq URL.                                                                              |
-| `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override. `0` = retain forever.                                      |
+| `DB_DRIVER`             | no                | `sqlite`                 | `sqlite` (everything in one file) or `victorialogs` (logs to VictoriaLogs, metadata still in `DB_DSN`).    |
+| `DB_DSN`                | no                | `./data/mylogger42.db`   | SQLite file path. Holds users/projects/keys in **both** modes.                                              |
+| `VLOGS_URL`             | no                | `http://localhost:9428`  | VictoriaLogs base URL. Only used when `DB_DRIVER=victorialogs`.                                             |
+| `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override on SQLite; on VictoriaLogs this is the only window. `0` = retain forever. |
 | `HTTP_PORT`             | no                | `8080`                   |                                                                                                            |
 | `LOG_LEVEL`             | no                | `info`                   | `warn` or `error` silences the per-request access log; any other value keeps it on. Errors always log.     |
 | `TRUST_FORWARDED_PROTO` | no                | `false`                  | Set to `true` behind a TLS-terminating reverse proxy. Already `true` in `docker-compose.yml`.              |

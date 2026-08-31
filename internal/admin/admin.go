@@ -78,6 +78,7 @@ func Run(args []string, cfg Config) error {
 type Config struct {
 	DBDriver  string
 	DBDSN     string
+	VLogsURL  string
 	KeyPepper []byte
 }
 

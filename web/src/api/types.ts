@@ -141,3 +141,16 @@ export interface UpdateProjectRequest {
 export interface IssueKeyRequest {
   label: string;
 }
+
+// Health is GET /api/v1/health. capabilities tells the UI which
+// per-project settings the active storage backend actually enforces —
+// VictoriaLogs, for instance, has one global retention window.
+export interface Health {
+  status: string;
+  storage: string;
+  uptime: string;
+  projects: number;
+  capabilities?: {
+    perProjectRetention?: boolean;
+  };
+}

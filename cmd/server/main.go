@@ -53,7 +53,11 @@ func main() {
 	logger.Printf("starting mylogger42 (driver=%s, port=%d, retention=%dd)", cfg.DBDriver, cfg.HTTPPort, cfg.RetentionDays)
 
 	openCtx, openCancel := context.WithTimeout(rootCtx, 10*time.Second)
-	stores, err := store.OpenStores(openCtx, store.Driver(cfg.DBDriver), cfg.DBDSN)
+	stores, err := store.OpenStores(openCtx, store.OpenConfig{
+		Driver:   store.Driver(cfg.DBDriver),
+		DSN:      cfg.DBDSN,
+		VLogsURL: cfg.VLogsURL,
+	})
 	openCancel()
 	if err != nil {
 		logger.Fatalf("storage: %v", err)
@@ -63,6 +67,16 @@ func main() {
 			logger.Printf("storage close: %v", err)
 		}
 	}()
+
+	// OpenStores does no network I/O for the HTTP-backed log stores, so
+	// without this a misconfigured VLOGS_URL would start cleanly and only
+	// surface on the first ingest. Fail at boot instead.
+	pingCtx, pingCancel := context.WithTimeout(rootCtx, 5*time.Second)
+	if err := stores.Logs.Ping(pingCtx); err != nil {
+		pingCancel()
+		logger.Fatalf("storage unreachable: %v", err)
+	}
+	pingCancel()
 
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(rootCtx, 5*time.Second)
 	if err := bootstrapAdminUser(bootstrapCtx, stores.Users, cfg, logger); err != nil {
@@ -146,6 +160,7 @@ func main() {
 type config struct {
 	DBDriver            string
 	DBDSN               string
+	VLogsURL            string
 	RetentionDays       int
 	HTTPPort            int
 	LogLevel            string
@@ -160,6 +175,7 @@ func loadConfig() (config, error) {
 	cfg := config{
 		DBDriver:      getEnv("DB_DRIVER", "sqlite"),
 		DBDSN:         getEnv("DB_DSN", "./data/mylogger42.db"),
+		VLogsURL:      getEnv("VLOGS_URL", "http://localhost:9428"),
 		HTTPPort:      8080,
 		RetentionDays: 30,
 		LogLevel:      strings.ToLower(getEnv("LOG_LEVEL", "info")),
@@ -326,6 +342,7 @@ func runAdmin(args []string) {
 	adminCfg := admin.Config{
 		DBDriver:  cfg.DBDriver,
 		DBDSN:     cfg.DBDSN,
+		VLogsURL:  cfg.VLogsURL,
 		KeyPepper: cfg.KeyPepper,
 	}
 	if err := admin.Run(args, adminCfg); err != nil {

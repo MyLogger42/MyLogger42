@@ -18,7 +18,11 @@ import (
 // openStores is the small adapter from admin.Config to store.OpenStores.
 // All DB-touching subcommands route through it.
 func openStores(ctx context.Context, cfg Config) (*store.Stores, error) {
-	stores, err := store.OpenStores(ctx, store.Driver(cfg.DBDriver), cfg.DBDSN)
+	stores, err := store.OpenStores(ctx, store.OpenConfig{
+		Driver:   store.Driver(cfg.DBDriver),
+		DSN:      cfg.DBDSN,
+		VLogsURL: cfg.VLogsURL,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { KeyRevealModal } from '../components/KeyRevealModal';
+import { useCapabilities } from '../hooks/useCapabilities';
 import { useProject } from '../hooks/useProject';
 import { useProjectKeys } from '../hooks/useProjectKeys';
 import { useProjects } from '../hooks/useProjects';
@@ -61,6 +62,7 @@ interface ProjectDetailsFormProps {
 }
 
 function ProjectDetailsForm({ project, onUpdate }: ProjectDetailsFormProps) {
+  const { perProjectRetention, storage } = useCapabilities();
   const [name, setName] = useState(project.name);
   const [retention, setRetention] = useState(
     project.retentionDays === null ? '' : String(project.retentionDays),
@@ -115,6 +117,11 @@ function ProjectDetailsForm({ project, onUpdate }: ProjectDetailsFormProps) {
             value={retention}
             onChange={(e) => setRetention(e.target.value)}
           />
+          {perProjectRetention ? null : (
+            <small className="filter-busy">
+              Not enforced on the {storage} backend &mdash; RETENTION_DAYS applies globally.
+            </small>
+          )}
         </label>
         <div className="filter-field-grow" style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <button type="submit" disabled={busy}>

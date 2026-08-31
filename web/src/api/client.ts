@@ -1,5 +1,6 @@
 import type {
   AuthMe,
+  Health,
   CreateProjectRequest,
   CreateProjectResponse,
   IssueKeyRequest,
@@ -140,6 +141,10 @@ export async function fetchLogById(projectSlug: string, id: string): Promise<Log
 export async function fetchSources(projectSlug: string): Promise<SourcesResponse> {
   const params = new URLSearchParams({ project: projectSlug });
   return jsonRequest<SourcesResponse>(`/api/v1/sources?${params.toString()}`);
+}
+
+export async function fetchHealth(): Promise<Health> {
+  return jsonRequest<Health>('/api/v1/health');
 }
 
 // --- auth -------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { KeyRevealModal } from '../components/KeyRevealModal';
+import { useCapabilities } from '../hooks/useCapabilities';
 import { useProjects } from '../hooks/useProjects';
 import type { CreateProjectResponse, Project } from '../api/types';
 
@@ -120,6 +121,7 @@ interface CreateFormProps {
 }
 
 function CreateProjectForm({ onCancel, onCreated, onCreate }: CreateFormProps) {
+  const { perProjectRetention, storage } = useCapabilities();
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [retentionDays, setRetentionDays] = useState<string>('');
@@ -180,6 +182,11 @@ function CreateProjectForm({ onCancel, onCreated, onCreate }: CreateFormProps) {
             value={retentionDays}
             onChange={(e) => setRetentionDays(e.target.value)}
           />
+          {perProjectRetention ? null : (
+            <small className="filter-busy">
+              Not enforced on the {storage} backend &mdash; RETENTION_DAYS applies globally.
+            </small>
+          )}
         </label>
 
         {error ? <div className="banner banner-error">{error}</div> : null}

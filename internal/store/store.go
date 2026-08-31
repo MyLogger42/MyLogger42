@@ -6,14 +6,17 @@
 // that bundles all four. Implementations share one DB connection / pool
 // — closing any one closes the underlying handle.
 //
-// The package ships SQLite (pure-Go via modernc.org/sqlite). Selection
-// is driven by DB_DRIVER; see Open / OpenStores.
+// The package ships SQLite (default, pure-Go via modernc.org/sqlite) as
+// the always-present backend, and VictoriaLogs as an optional high-volume
+// LogStore that keeps metadata in SQLite. Selection is driven by
+// DB_DRIVER; see Open / OpenStores.
 package store
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/mylogger42/mylogger42/internal/domain"
@@ -105,28 +108,71 @@ type Stores struct {
 type Driver string
 
 const (
+	// DriverSQLite keeps everything, logs included, in one SQLite file.
+	// This is the zero-dependency single-binary mode.
 	DriverSQLite Driver = "sqlite"
+	// DriverVictoriaLogs is the hybrid mode: logs go to a VictoriaLogs
+	// server over HTTP, while users/projects/keys stay in SQLite.
+	DriverVictoriaLogs Driver = "victorialogs"
 )
 
-// Open dispatches to the correct backend's LogStore constructor.
-//
-// Deprecated: Use OpenStores. Open exists for v1 callers that haven't
-// migrated yet; it returns only the LogStore facet.
-func Open(ctx context.Context, driver Driver, dsn string) (LogStore, error) {
-	s, err := OpenStores(ctx, driver, dsn)
-	if err != nil {
-		return nil, err
-	}
-	return s.Logs, nil
+// OpenConfig describes which backends to open. It exists because the
+// hybrid VictoriaLogs mode needs two addresses at once — a SQLite path
+// for metadata and an HTTP URL for logs — which a single dsn string
+// can't express.
+type OpenConfig struct {
+	Driver Driver
+	// DSN is always the SQLite path, in every mode. Under
+	// DriverVictoriaLogs it still holds users/projects/keys, so pointing
+	// it somewhere else would strand an existing database.
+	DSN string
+	// VLogsURL is the VictoriaLogs base URL. Ignored unless Driver is
+	// DriverVictoriaLogs; empty falls back to http://localhost:9428.
+	VLogsURL string
 }
 
-// OpenStores opens the database, runs migrations, and returns all four
-// store facets bundled in a *Stores aggregate.
-func OpenStores(ctx context.Context, driver Driver, dsn string) (*Stores, error) {
-	switch driver {
+// OpenStores opens the configured backends, runs migrations, and returns
+// all four store facets bundled in a *Stores aggregate.
+//
+// Closing the returned Stores.Logs closes everything it opened — under
+// the hybrid driver that means the SQLite metadata handle too, since
+// callers only ever close the LogStore facet.
+func OpenStores(ctx context.Context, cfg OpenConfig) (*Stores, error) {
+	switch cfg.Driver {
 	case DriverSQLite, "":
-		return OpenSQLiteStores(ctx, dsn)
+		return OpenSQLiteStores(ctx, cfg.DSN)
+	case DriverVictoriaLogs:
+		// Hybrid: SQLite keeps the relational metadata, VictoriaLogs
+		// takes the log firehose.
+		meta, err := OpenSQLiteStores(ctx, cfg.DSN)
+		if err != nil {
+			return nil, fmt.Errorf("open metadata sqlite: %w", err)
+		}
+		logs, err := OpenVictoriaLogs(cfg.VLogsURL)
+		if err != nil {
+			_ = meta.Logs.Close()
+			return nil, fmt.Errorf("open victorialogs: %w", err)
+		}
+		return &Stores{
+			Logs:     hybridLogStore{LogStore: logs, meta: meta.Logs},
+			Projects: meta.Projects,
+			Keys:     meta.Keys,
+			Users:    meta.Users,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown db driver %q", driver)
+		return nil, fmt.Errorf("unknown db driver %q", cfg.Driver)
 	}
+}
+
+// hybridLogStore couples the VictoriaLogs LogStore to the SQLite handle
+// backing the metadata stores, so one Close shuts both down. Without
+// this, main.go's single `stores.Logs.Close()` would close the HTTP
+// client (a no-op) and leak the SQLite handle.
+type hybridLogStore struct {
+	LogStore
+	meta io.Closer
+}
+
+func (h hybridLogStore) Close() error {
+	return errors.Join(h.LogStore.Close(), h.meta.Close())
 }
