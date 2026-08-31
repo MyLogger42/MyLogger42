@@ -393,6 +393,18 @@ func (s *sqliteStore) Sources(ctx context.Context, projectID string) ([]domain.S
 	return out, rows.Err()
 }
 
+// maxStatsSeriesRows caps the histogram series in BOTH backends. 5000
+// (bucket, level) group rows is ~700 columns even with all seven levels
+// present — far more than any chart renders — and the cap keeps a
+// too-fine bucket over a too-wide range from streaming a million rows
+// into memory.
+//
+// ponytail: a newest-first row cap instead of validating range/bucket up
+// front. If a caller ever needs a longer window, add an explicit 400 on
+// range/bucket > N rather than raising this. Totals and top-messages are
+// NOT capped — only the chart is.
+const maxStatsSeriesRows = 5000
+
 // Stats aggregates the same filtered row set Query pages through. Two
 // round trips: the level-over-time series (which also yields the totals)
 // and the top repeated-message groups.
@@ -416,12 +428,6 @@ func (s *sqliteStore) Stats(ctx context.Context, projectID string, f domain.Quer
 		TopMessages:   []domain.MessageGroup{},
 	}
 
-	// ponytail: newest-first row cap instead of validating range/bucket up
-	// front. 5000 (service-free) group rows is ~700 buckets even with all
-	// seven levels present — far more columns than any chart renders. If a
-	// caller ever needs a longer window, add an explicit 400 on
-	// range/bucket > N rather than raising this.
-	const maxSeriesRows = 5000
 	const bucketExpr = `(CAST(strftime('%s', substr(timestamp, 1, 19)) AS INTEGER) / ? * ?)`
 
 	seriesSQL := "SELECT " + bucketExpr + " AS bucket, level, COUNT(*) FROM log_entries" + where +
@@ -429,7 +435,7 @@ func (s *sqliteStore) Stats(ctx context.Context, projectID string, f domain.Quer
 	// Placeholders bind in textual order, so the two bucket divisors come
 	// before the WHERE args.
 	seriesArgs := append([]any{bucketSeconds, bucketSeconds}, args...)
-	seriesArgs = append(seriesArgs, maxSeriesRows)
+	seriesArgs = append(seriesArgs, maxStatsSeriesRows)
 
 	rows, err := s.reader().QueryContext(ctx, seriesSQL, seriesArgs...)
 	if err != nil {
@@ -452,7 +458,6 @@ func (s *sqliteStore) Stats(ctx context.Context, projectID string, f domain.Quer
 			order = append(order, bucket)
 		}
 		byBucket[bucket][domain.LogLevel(level)] += count
-		out.Totals[domain.LogLevel(level)] += count
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -463,6 +468,28 @@ func (s *sqliteStore) Stats(ctx context.Context, projectID string, f domain.Quer
 			Start:  time.Unix(b, 0).UTC(),
 			Counts: byBucket[b],
 		})
+	}
+
+	// Totals are their OWN query rather than a sum of the series rows: the
+	// series is capped (maxStatsSeriesRows) and a truncated sum would show
+	// level chips that disagree with the list's "N entries match" on the
+	// same screen. Ungrouped by bucket, so it stays one row per level.
+	totalsSQL := "SELECT level, COUNT(*) FROM log_entries" + where + " GROUP BY level"
+	totalRows, err := s.reader().QueryContext(ctx, totalsSQL, args...)
+	if err != nil {
+		return nil, fmt.Errorf("stats totals: %w", err)
+	}
+	defer totalRows.Close()
+	for totalRows.Next() {
+		var level string
+		var count int64
+		if err := totalRows.Scan(&level, &count); err != nil {
+			return nil, err
+		}
+		out.Totals[domain.LogLevel(level)] = count
+	}
+	if err := totalRows.Err(); err != nil {
+		return nil, err
 	}
 
 	topSQL := `SELECT service, level, message, COUNT(*) AS c, MIN(timestamp), MAX(timestamp)

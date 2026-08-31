@@ -345,8 +345,12 @@ func (v *victoriaLogsStore) Stats(ctx context.Context, projectID string, f domai
 		TopMessages:   []domain.MessageGroup{},
 	}
 
-	seriesPipeline := fmt.Sprintf("%s | stats by (%s:%s, %s) count() rows | sort by (%s)",
-		filter, fieldTime, logsQLStep(bucketSeconds), fieldLevel, fieldTime)
+	// Newest-first, capped, then flipped to ascending — the same shape and
+	// the same cap as the SQLite backend, so a too-fine bucket over a wide
+	// range can't stream every (minute, level) row into memory here while
+	// the other backend truncates.
+	seriesPipeline := fmt.Sprintf("%s | stats by (%s:%s, %s) count() rows | sort by (%s) desc | limit %d",
+		filter, fieldTime, logsQLStep(bucketSeconds), fieldLevel, fieldTime, maxStatsSeriesRows)
 	if err := v.eachStatsRow(ctx, seriesPipeline, f, func(raw map[string]any) error {
 		level := domain.LogLevel(stringField(raw, fieldLevel))
 		count := int64Field(raw, "rows")
@@ -361,10 +365,24 @@ func (v *victoriaLogsStore) Stats(ctx context.Context, projectID string, f domai
 				Counts: map[domain.LogLevel]int64{level: count},
 			})
 		}
-		out.Totals[level] += count
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("vlogs stats series: %w", err)
+	}
+	// Descending in, ascending out: the chart reads left-to-right.
+	for i, j := 0, len(out.Series)-1; i < j; i, j = i+1, j-1 {
+		out.Series[i], out.Series[j] = out.Series[j], out.Series[i]
+	}
+
+	// Totals are their own uncapped aggregate, for the reason documented
+	// on the SQLite side: a sum over the capped series would show level
+	// chips that disagree with the list's match count.
+	totalsPipeline := fmt.Sprintf("%s | stats by (%s) count() rows", filter, fieldLevel)
+	if err := v.eachStatsRow(ctx, totalsPipeline, f, func(raw map[string]any) error {
+		out.Totals[domain.LogLevel(stringField(raw, fieldLevel))] = int64Field(raw, "rows")
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("vlogs stats totals: %w", err)
 	}
 
 	topPipeline := fmt.Sprintf(

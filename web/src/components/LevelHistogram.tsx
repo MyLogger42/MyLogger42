@@ -58,10 +58,22 @@ const MAX_COLUMNS = 180;
 export function LevelHistogram({ series, bucketSeconds, onSelectRange }: Props) {
   const [hover, setHover] = useState<number | null>(null);
 
-  const { columns, gapsFilled, step } = useMemo(() => {
+  const { columns, gapsFilled, step, truncated } = useMemo(() => {
     const filled = fillGaps(series, bucketSeconds);
+    if (!filled.gapsFilled) {
+      // Buckets aren't contiguous, so merging adjacent ones would fuse
+      // instants that are hours apart and hand the click a range the
+      // column doesn't describe. Show the newest columns instead.
+      const columns = filled.columns.slice(-MAX_COLUMNS);
+      return {
+        ...filled,
+        columns,
+        step: bucketSeconds,
+        truncated: columns.length < filled.columns.length,
+      };
+    }
     const merged = mergeToFit(filled.columns, bucketSeconds);
-    return { ...filled, ...merged };
+    return { ...filled, ...merged, truncated: false };
   }, [series, bucketSeconds]);
 
   const totals = columns.map((c) => sumCounts(c));
@@ -148,6 +160,7 @@ export function LevelHistogram({ series, bucketSeconds, onSelectRange }: Props) 
         <span>{formatBucket(new Date(columns[0].start), step)}</span>
         <span className="hist-axis-note">
           {gapsFilled ? null : 'gaps omitted — spacing is not linear'}
+          {truncated ? ` · newest ${MAX_COLUMNS} shown` : null}
           {step !== bucketSeconds ? ` merged to ${stepLabel(step)} columns` : null}
         </span>
         <span>
@@ -185,7 +198,9 @@ function fillGaps(
 
 // mergeToFit folds adjacent columns by an integer factor until they fit
 // MAX_COLUMNS, returning the effective bucket size. Merging keeps the
-// axis linear — dropping or truncating columns would not.
+// axis linear — dropping or truncating columns would not. Callers must
+// pass a CONTIGUOUS run (post-fillGaps): merging non-adjacent instants
+// would produce a column whose click range doesn't hold its own data.
 function mergeToFit(
   columns: LevelBucket[],
   bucketSeconds: number,

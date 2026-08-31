@@ -351,11 +351,18 @@ func TestVLogsStatsPipelinesAndFolding(t *testing.T) {
 		queries = append(queries, q)
 		switch {
 		case strings.Contains(q, "stats by (_time:"):
-			// Two levels inside one bucket, then a second bucket — the
-			// folding case. Counts arrive as strings.
-			_, _ = io.WriteString(w, `{"_time":"2026-08-31T10:00:00Z","level":"Error","rows":"3"}`+"\n"+
-				`{"_time":"2026-08-31T10:00:00Z","level":"Info","rows":"5"}`+"\n"+
-				`{"_time":"2026-08-31T11:00:00Z","level":"Error","rows":"1"}`+"\n")
+			// Newest bucket first (the pipeline sorts desc), two levels
+			// inside one bucket — the folding case. Counts arrive as
+			// strings.
+			_, _ = io.WriteString(w, `{"_time":"2026-08-31T11:00:00Z","level":"Error","rows":"1"}`+"\n"+
+				`{"_time":"2026-08-31T10:00:00Z","level":"Error","rows":"3"}`+"\n"+
+				`{"_time":"2026-08-31T10:00:00Z","level":"Info","rows":"5"}`+"\n")
+		case strings.Contains(q, "stats by (level)"):
+			// Totals are their own uncapped aggregate — deliberately NOT
+			// the sum of the (capped) series rows above, so this test
+			// fails if the code goes back to summing them.
+			_, _ = io.WriteString(w, `{"level":"Error","rows":"9"}`+"\n"+
+				`{"level":"Info","rows":"7"}`+"\n")
 		default:
 			_, _ = io.WriteString(w,
 				`{"service":"api","level":"Error","_msg":"redis timeout","rows":"3","first_seen":"2026-08-31T10:00:00Z","last_seen":"2026-08-31T10:40:00Z"}`+"\n")
@@ -372,36 +379,48 @@ func TestVLogsStatsPipelinesAndFolding(t *testing.T) {
 		t.Fatalf("Stats: %v", err)
 	}
 
-	if len(queries) != 2 {
-		t.Fatalf("expected 2 pipelines, got %d: %v", len(queries), queries)
+	if len(queries) != 3 {
+		t.Fatalf("expected 3 pipelines, got %d: %v", len(queries), queries)
 	}
 	for _, want := range []string{
 		`project_id:="proj_1"`, `service:="api"`,
-		"stats by (_time:1h, level) count() rows", "| sort by (_time)",
+		"stats by (_time:1h, level) count() rows",
+		"| sort by (_time) desc | limit 5000",
 	} {
 		if !strings.Contains(queries[0], want) {
 			t.Errorf("series pipeline missing %q: %s", want, queries[0])
 		}
+	}
+	if !strings.Contains(queries[1], "stats by (level) count() rows") {
+		t.Errorf("totals pipeline missing its stats pipe: %s", queries[1])
+	}
+	if strings.Contains(queries[1], "limit") {
+		t.Errorf("totals pipeline must not be capped: %s", queries[1])
 	}
 	for _, want := range []string{
 		"stats by (service, level, _msg) count() rows",
 		"min(_time) first_seen", "max(_time) last_seen",
 		"| sort by (rows desc) | limit 10",
 	} {
-		if !strings.Contains(queries[1], want) {
-			t.Errorf("top pipeline missing %q: %s", want, queries[1])
+		if !strings.Contains(queries[2], want) {
+			t.Errorf("top pipeline missing %q: %s", want, queries[2])
 		}
 	}
 
-	// Two rows for the same instant collapse into one column.
+	// Two rows for the same instant collapse into one column, and the
+	// descending response comes back ascending for the chart.
 	if len(got.Series) != 2 {
 		t.Fatalf("Series = %+v, want 2 buckets", got.Series)
+	}
+	if want := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC); !got.Series[0].Start.Equal(want) {
+		t.Errorf("Series[0].Start = %s, want %s (ascending)", got.Series[0].Start, want)
 	}
 	if got.Series[0].Counts[domain.LevelError] != 3 || got.Series[0].Counts[domain.LevelInfo] != 5 {
 		t.Errorf("bucket 0 counts = %+v, want Error:3 Info:5", got.Series[0].Counts)
 	}
-	if got.Totals[domain.LevelError] != 4 || got.Totals[domain.LevelInfo] != 5 {
-		t.Errorf("Totals = %+v, want Error:4 Info:5", got.Totals)
+	// From the totals pipeline, not the series sum (which would be 4/5).
+	if got.Totals[domain.LevelError] != 9 || got.Totals[domain.LevelInfo] != 7 {
+		t.Errorf("Totals = %+v, want Error:9 Info:7", got.Totals)
 	}
 	if len(got.TopMessages) != 1 || got.TopMessages[0].Count != 3 ||
 		got.TopMessages[0].Message != "redis timeout" {
