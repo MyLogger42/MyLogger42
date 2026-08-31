@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // errSkipMigration is a sentinel a hook returns to tell the runner the
@@ -22,22 +20,10 @@ var errSkipMigration = errors.New("migration already applied")
 // SQL file should be skipped.
 type migrationSQLHook func(context.Context, *sql.DB) error
 
-// migrationPgxHook is the pgx variant — runs against a pgxpool.Pool. We
-// can't share the *sql.DB hook directly because pgx uses its own pool and
-// we don't want a second driver layer just for the migration runner.
-type migrationPgxHook func(context.Context, *pgxpool.Pool) error
-
 // sqliteHooks are pre-flight checks run before specific SQLite migration
 // files. The map key is the bare filename (no directory).
 var sqliteHooks = map[string]migrationSQLHook{
 	"002_projects.sql": preflight002SQL,
-}
-
-// postgresHooks mirrors sqliteHooks for the Postgres runner. The Postgres
-// 002 SQL is already idempotent (uses ADD COLUMN IF NOT EXISTS), so the
-// pg hook only enforces the orphaned-rows check.
-var postgresHooks = map[string]migrationPgxHook{
-	"002_projects.sql": preflight002Pg,
 }
 
 // preflight002SQL has two responsibilities:
@@ -101,29 +87,6 @@ func preflight002SQL(ctx context.Context, db *sql.DB) error {
 	if projects == 0 {
 		return fmt.Errorf("log_entries has %d rows but no projects exist; "+
 			"delete the database (no v1 data migration shipped) before upgrading", entries)
-	}
-	return nil
-}
-
-// preflight002Pg mirrors preflight002SQL but only enforces the
-// orphaned-rows check. The Postgres 002 SQL uses ADD COLUMN IF NOT
-// EXISTS so a duplicate-column skip path isn't needed.
-func preflight002Pg(ctx context.Context, pool *pgxpool.Pool) error {
-	var entries int
-	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM log_entries").Scan(&entries); err != nil {
-		return nil
-	}
-	if entries == 0 {
-		return nil
-	}
-	var projects int
-	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM projects").Scan(&projects); err != nil {
-		return errors.New("log_entries has rows but no projects table; " +
-			"drop the database (no v1 data migration shipped) before upgrading")
-	}
-	if projects == 0 {
-		return fmt.Errorf("log_entries has %d rows but no projects exist; "+
-			"drop the database (no v1 data migration shipped) before upgrading", entries)
 	}
 	return nil
 }

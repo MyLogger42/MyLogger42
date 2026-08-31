@@ -6,8 +6,3 @@ import "embed"
 //
 //go:embed sqlite/*.sql
 var SQLite embed.FS
-
-// Postgres holds the bundled Postgres migration files.
-//
-//go:embed postgres/*.sql
-var Postgres embed.FS

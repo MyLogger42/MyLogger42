@@ -6,9 +6,8 @@
 // that bundles all four. Implementations share one DB connection / pool
 // — closing any one closes the underlying handle.
 //
-// The package ships SQLite (default, pure-Go via modernc.org/sqlite) and
-// Postgres (via jackc/pgx) backends. Selection is driven by DB_DRIVER;
-// see Open / OpenStores.
+// The package ships SQLite (pure-Go via modernc.org/sqlite). Selection
+// is driven by DB_DRIVER; see Open / OpenStores.
 package store
 
 import (
@@ -106,8 +105,7 @@ type Stores struct {
 type Driver string
 
 const (
-	DriverSQLite   Driver = "sqlite"
-	DriverPostgres Driver = "postgres"
+	DriverSQLite Driver = "sqlite"
 )
 
 // Open dispatches to the correct backend's LogStore constructor.
@@ -128,8 +126,6 @@ func OpenStores(ctx context.Context, driver Driver, dsn string) (*Stores, error)
 	switch driver {
 	case DriverSQLite, "":
 		return OpenSQLiteStores(ctx, dsn)
-	case DriverPostgres:
-		return OpenPostgresStores(ctx, dsn)
 	default:
 		return nil, fmt.Errorf("unknown db driver %q", driver)
 	}
