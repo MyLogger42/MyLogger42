@@ -74,9 +74,23 @@ func SessionFromContext(ctx context.Context) (*auth.Claims, bool) {
 //
 // The lookups are fronted by an authCache. Note what the cache does NOT
 // skip: the HMAC compare still runs on every request (a cache hit saves
-// the two DB round trips, never the crypto), misses are cached too so an
-// unknown prefix stays as fast as a known one, and the archived-project
-// check is re-evaluated on every request rather than baked into the entry.
+// the two DB round trips, never the crypto), and misses are cached too so
+// an unknown prefix stays as fast as a known one.
+//
+// The archived-project check also runs on every request, but against the
+// project SNAPSHOT in the cache entry — it is not a live read. What makes
+// it fresh is invalidation: every admin mutation calls
+// authCache.invalidateAll(), so an archive stops ingest on the next call.
+// Archiving is API-only (the CLI has no archive subcommand), so that path
+// is always immediate.
+//
+// The gap is mutations made by another process — `mylogger42 admin
+// revoke-key` / `delete-project`, or a second server against the same
+// database. Those are bounded by authCacheTTL, and only by it: a
+// CLI-revoked key keeps being accepted until its entry expires. Closing
+// that would mean a DB round trip per ingest, which is the cost this
+// cache exists to remove; operators who need instant revocation should
+// use the API.
 func requireProjectKey(
 	keys store.KeyStore,
 	projects store.ProjectStore,
@@ -143,8 +157,9 @@ func requireProjectKey(
 				return
 			}
 
-			// Checked per-request, not cached as a verdict: archiving a
-			// project must stop ingest on the very next call.
+			// Not cached as a verdict — but `project` may be a cached
+			// snapshot, so this is only as fresh as the entry. See the
+			// invalidation / TTL note in the doc comment above.
 			if project.ArchivedAt != nil {
 				writeError(w, http.StatusForbidden, "project archived")
 				return

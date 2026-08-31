@@ -114,12 +114,16 @@ cache deliberately keeps:
   measurably faster than an unknown one, which is a prefix-existence
   timing oracle — exactly what `auth.FakeVerifyForTimingParity` exists to
   prevent.
-- **It caches facts, not verdicts.** The HMAC compare and the
-  archived-project check still run on every request.
-- **Correctness does not depend on the TTL.** Admin mutations invalidate
-  explicitly, so a revoked key is rejected on the very next request. The
-  TTL only bounds staleness from changes made by another process, such
-  as the `admin` CLI.
+- **It caches facts, not verdicts.** The HMAC compare runs on every
+  request — a hit saves the DB round trips, never the crypto. The
+  archived-project check also runs every request, but against the cached
+  project snapshot, so its freshness comes from invalidation (below), not
+  from the check itself.
+- **In-process mutations invalidate explicitly.** Every admin write
+  drops the whole cache, so a key revoked or a project archived through
+  the API is rejected on the very next request. The TTL bounds staleness
+  for changes this process never saw — the `admin` CLI writing to the
+  same database — where "next request" becomes "within 60 s".
 
 ---
 

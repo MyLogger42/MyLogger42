@@ -323,7 +323,10 @@ func (s *Server) handleArchiveProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
-	// Archived projects must stop accepting ingest immediately.
+	// Drop the cached project snapshots so the archived flag is seen on
+	// the next ingest call rather than up to authCacheTTL later. This
+	// invalidation IS the mechanism — the middleware's archived check
+	// reads the cache entry, not the database.
 	s.authCache.invalidateAll()
 	writeJSON(w, http.StatusOK, projectFromDomain(updated))
 }

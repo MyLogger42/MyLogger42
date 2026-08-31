@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,7 +74,12 @@ func (f *fakeProjectStore) GetByID(_ context.Context, id string) (*domain.Projec
 	if !ok {
 		return nil, store.ErrNotFound
 	}
-	return p, nil
+	// A COPY, like every real store: returning the map's pointer would
+	// make anything holding the result (the auth cache, say) alias this
+	// store, so a later mutation here would appear to be seen live and a
+	// staleness bug would test green.
+	cp := *p
+	return &cp, nil
 }
 func (f *fakeProjectStore) List(context.Context, bool) ([]domain.Project, error) {
 	return nil, store.ErrNotFound
@@ -80,7 +87,15 @@ func (f *fakeProjectStore) List(context.Context, bool) ([]domain.Project, error)
 func (f *fakeProjectStore) Update(context.Context, string, string, *int) (*domain.Project, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeProjectStore) Archive(context.Context, string) (*domain.Project, error) {
+func (f *fakeProjectStore) Archive(_ context.Context, slug string) (*domain.Project, error) {
+	for _, p := range f.byID {
+		if p.Slug == slug {
+			now := time.Now().UTC()
+			p.ArchivedAt = &now
+			cp := *p
+			return &cp, nil
+		}
+	}
 	return nil, store.ErrNotFound
 }
 func (f *fakeProjectStore) Unarchive(context.Context, string) (*domain.Project, error) {
@@ -439,19 +454,84 @@ func TestAuthCacheInvalidateAllHonoursRevocation(t *testing.T) {
 	}
 }
 
-// Archiving is re-checked per request, so it takes effect even while the
-// project is still cached.
-func TestAuthCacheArchivedProjectRejectedWhileCached(t *testing.T) {
-	mw, _, projects, _, _, _ := setupProjectKeyMW(t)
+// The archived check runs per request, but against the project SNAPSHOT
+// in the cache — so what actually stops ingest is invalidation (for
+// mutations this process makes) or the TTL (for mutations it doesn't,
+// e.g. the admin CLI). This test pins all three halves of that, because
+// the stale window is the part that is easy to lose.
+func TestAuthCacheArchivedProjectStaleUntilInvalidated(t *testing.T) {
+	mw, _, projects, _, _, cache := setupProjectKeyMW(t)
 
 	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
 		t.Fatalf("priming request: status = %d, want 204", got)
 	}
-	archived := time.Now().UTC()
-	projects.byID["proj-1"].ArchivedAt = &archived
+	if _, err := projects.Archive(context.Background(), "auth-svc"); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Documented staleness: the cached snapshot predates the archive.
+	// If this ever returns 403, the cache started re-reading the project
+	// live and the perf premise changed — update the docs, don't just
+	// flip the assertion.
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("cached snapshot: status = %d, want 204 (stale window)", got)
+	}
+
+	// Invalidation is the mechanism, and it's what admin.go calls.
+	cache.invalidateAll()
+	if got := ingest(t, mw, validKey); got != http.StatusForbidden {
+		t.Fatalf("after invalidate: status = %d, want 403", got)
+	}
+}
+
+// TTL is the backstop for an archive this process never saw — the admin
+// CLI writing to the same database.
+func TestAuthCacheArchivedProjectRejectedAfterTTL(t *testing.T) {
+	mw, _, projects, _, _, cache := setupProjectKeyMW(t)
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+	if _, err := projects.Archive(context.Background(), "auth-svc"); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	// Force expiry rather than sleeping out the real TTL.
+	cache.mu.Lock()
+	for k, e := range cache.entries {
+		e.expiresAt = time.Now().Add(-time.Second)
+		cache.entries[k] = e
+	}
+	cache.mu.Unlock()
 
 	if got := ingest(t, mw, validKey); got != http.StatusForbidden {
-		t.Fatalf("archived project served from cache: status = %d, want 403", got)
+		t.Fatalf("after TTL expiry: status = %d, want 403", got)
+	}
+}
+
+// The admin archive handler is what makes the stale window zero in
+// practice; nothing else asserted that it invalidates.
+func TestArchiveProjectHandlerInvalidatesAuthCache(t *testing.T) {
+	mw, _, projects, _, _, cache := setupProjectKeyMW(t)
+	srv := &Server{
+		projects:  projects,
+		authCache: cache,
+		logger:    log.New(io.Discard, "", 0),
+	}
+
+	if got := ingest(t, mw, validKey); got != http.StatusNoContent {
+		t.Fatalf("priming request: status = %d, want 204", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/projects/auth-svc/archive", nil)
+	req.SetPathValue("slug", "auth-svc")
+	rr := httptest.NewRecorder()
+	srv.handleArchiveProject(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archive: status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	if got := ingest(t, mw, validKey); got != http.StatusForbidden {
+		t.Fatalf("ingest after archive: status = %d, want 403", got)
 	}
 }
 

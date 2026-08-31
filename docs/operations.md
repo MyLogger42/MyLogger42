@@ -33,8 +33,13 @@ In the UI, click **Revoke** on the row. Or:
 
 (`<key-id>` is the UUID shown in the keys table — not the prefix.)
 
-Revocation is immediate and idempotent. Anything still using the key
-will start getting `401 Unauthorized` on the next request.
+Revocation is idempotent. Revoking **in the UI** takes effect at once:
+anything still using the key gets `401 Unauthorized` on its next
+request. Revoking with the **CLI** writes to the database behind the
+running server's ingest-auth cache, so the key can keep being accepted
+for up to 60 seconds (the cache TTL) before the `401` starts. Use the UI
+when a key is compromised and every second counts — or restart the
+server, which empties the cache.
 
 ### Create another project
 
@@ -65,6 +70,9 @@ UI: **Settings → Danger zone → Archive**.
 Archived projects stop accepting ingest (clients get `403 Forbidden`)
 but their existing entries stay readable until retention deletes them.
 Reversible — **Unarchive** brings it back.
+
+Archiving takes effect on the client's next request — it is an API-only
+operation, and the server drops its ingest-auth cache as part of it.
 
 If you want an archived project's entries kept indefinitely, set its
 retention to `0` **before** archiving. (Archive doesn't pause the
