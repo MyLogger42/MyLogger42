@@ -57,6 +57,29 @@ No Go or Node toolchain needed — the image builds everything
 internally. Prefer running the binary directly? See
 [Run from source](#run-from-source).
 
+### Starting with VictoriaLogs instead of SQLite
+
+Same three commands, two extra lines in `.env`. Only do this if you
+already know you want it — SQLite handles far more than most
+deployments need, and the [comparison
+below](#switching-the-log-engine-to-victorialogs) lists what changes.
+
+```sh
+git clone https://github.com/MyLogger42/MyLogger42.git && cd MyLogger42
+cat > .env <<'EOF'
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me
+DB_DRIVER=victorialogs
+COMPOSE_PROFILES=victorialogs
+EOF
+docker compose up -d
+```
+
+`DB_DRIVER` tells the server where to put logs; `COMPOSE_PROFILES`
+tells Compose to actually start the VictoriaLogs container. Both live in
+`.env`, so every later `docker compose` command — `logs`, `down`,
+`restart` — works with no extra flags.
+
 ---
 
 ## How it works
@@ -401,17 +424,51 @@ purpose-built log engine with heavy compression and indexed search.
 Users, projects and ingest keys stay in SQLite, so this is still a
 two-container deployment with no database server to administer.
 
-```
-DB_DRIVER=victorialogs
-VLOGS_URL=http://vlogs:9428
-DB_DSN=/app/data/mylogger42.db   # unchanged — still holds the metadata
+Two lines in `.env`:
+
+```sh
+DB_DRIVER=victorialogs      # the server sends logs to VictoriaLogs
+COMPOSE_PROFILES=victorialogs  # Compose starts the vlogs container
 ```
 
-Then start the extra container via its Compose profile:
+Then the usual restart:
 
-```bash
-DB_DRIVER=victorialogs docker compose --profile victorialogs up -d
+```sh
+docker compose up -d
 ```
+
+You need both. With `DB_DRIVER` alone the server pings a VictoriaLogs
+that isn't there, exits (`storage unreachable`), and restart-loops; with
+the profile alone you get a log engine nothing writes to.
+
+Nothing else needs setting — `docker-compose.yml` already wires
+`VLOGS_URL` and keeps `DB_DSN` on the same volume, so your users,
+projects and keys carry over untouched.
+
+Confirm which engine is live:
+
+```sh
+curl -s http://localhost:8080/api/v1/health
+# {"status":"ok","storage":"victorialogs",...}
+```
+
+<details>
+<summary>Prefer not to put <code>COMPOSE_PROFILES</code> in <code>.env</code>?</summary>
+
+Pass the profile per command instead:
+
+```sh
+docker compose --profile victorialogs up -d
+```
+
+The catch is `up`: without the flag it brings up the server only and
+silently skips vlogs, so after a `down` the server boots with nothing to
+write to and restart-loops until you re-run it *with* the flag. Tearing
+down is more forgiving — `stop` and `down` reach the vlogs container
+either way (checked on Compose v2.39) — but `up` is the command you type
+most, which is why the `.env` line above is less to remember.
+
+</details>
 
 The REST API and UI are identical in both modes. Three differences are
 worth knowing before you switch:
@@ -429,7 +486,18 @@ the drop only in its own log. If you backfill old logs, raise
 
 Switching engines does not migrate existing logs — logs already in
 SQLite stay there. Metadata (users, projects, keys) is untouched either
-way, so you can switch back by unsetting `DB_DRIVER`.
+way, so you can switch back by removing `DB_DRIVER` and
+`COMPOSE_PROFILES` from `.env` and running `docker compose up -d` again.
+
+**Running from source instead of Docker?** There is no Compose profile
+to activate, so point the binary at your own VictoriaLogs and set both
+addresses yourself — `DB_DSN` still holds the metadata:
+
+```sh
+DB_DRIVER=victorialogs
+VLOGS_URL=http://localhost:9428
+DB_DSN=./data/mylogger42.db
+```
 
 [vlogs]: https://docs.victoriametrics.com/victorialogs/
 
@@ -474,7 +542,8 @@ the proxy.
 | `ADMIN_PASSWORD_HASH`   | first start only  | —                        | **Local dev only.** Pre-computed bcrypt hash. Generate with `admin hash-password`.                         |
 | `DB_DRIVER`             | no                | `sqlite`                 | `sqlite` (everything in one file) or `victorialogs` (logs to VictoriaLogs, metadata still in `DB_DSN`).    |
 | `DB_DSN`                | no                | `./data/mylogger42.db`   | SQLite file path. Holds users/projects/keys in **both** modes.                                              |
-| `VLOGS_URL`             | no                | `http://localhost:9428`  | VictoriaLogs base URL. Only used when `DB_DRIVER=victorialogs`.                                             |
+| `VLOGS_URL`             | no                | `http://localhost:9428`  | VictoriaLogs base URL. Only used when `DB_DRIVER=victorialogs`. Docker Compose sets it for you.             |
+| `COMPOSE_PROFILES`      | no                | —                        | Read by Docker Compose, not the server. Set to `victorialogs` to start the vlogs container without passing `--profile` on every command. |
 | `RETENTION_DAYS`        | no                | `30`                     | Default retention. Per-project values override on SQLite; on VictoriaLogs this is the only window. `0` = retain forever. |
 | `HTTP_PORT`             | no                | `8080`                   |                                                                                                            |
 | `LOG_LEVEL`             | no                | `info`                   | `warn` or `error` silences the per-request access log; any other value keeps it on. Errors always log.     |

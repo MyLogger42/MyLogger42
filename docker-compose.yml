@@ -15,8 +15,12 @@ services:
       #   DB_DRIVER=sqlite       -> everything in one file, no other container.
       #   DB_DRIVER=victorialogs -> logs go to the vlogs service below;
       #                             users/projects/keys stay in DB_DSN.
-      # The victorialogs mode also needs the compose profile:
-      #   DB_DRIVER=victorialogs docker compose --profile victorialogs up -d
+      # The victorialogs mode also needs the vlogs service switched on,
+      # which is behind a profile. Easiest is two lines in .env, so plain
+      # `docker compose up -d` (and logs/down/restart) just work:
+      #   DB_DRIVER=victorialogs
+      #   COMPOSE_PROFILES=victorialogs
+      # Or pass it per command: docker compose --profile victorialogs up -d
       DB_DRIVER: ${DB_DRIVER:-sqlite}
       DB_DSN: /app/data/mylogger42.db
       VLOGS_URL: http://vlogs:9428
