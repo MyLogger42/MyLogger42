@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { KeyRevealModal } from '../components/KeyRevealModal';
+import { KeysSection } from '../components/KeysSection';
+import { useAccessTokens } from '../hooks/useAccessTokens';
 import { useCapabilities } from '../hooks/useCapabilities';
 import { useProjects } from '../hooks/useProjects';
-import type { CreateProjectResponse, Project } from '../api/types';
+import type { CreateProjectResponse, IssuedKey, Project } from '../api/types';
 
 // ProjectsPage is the post-login landing place. Renders an empty state
 // the first time you land here (no projects yet) or a list of active
@@ -46,6 +48,7 @@ export function ProjectsPage() {
           {archived.length > 0 ? (
             <ProjectList title="Archived" projects={archived} />
           ) : null}
+          <AgentAccessSection />
         </>
       )}
 
@@ -66,6 +69,53 @@ export function ProjectsPage() {
         <KeyRevealModal issued={revealed.key} onClose={() => setRevealed(null)} />
       ) : null}
     </section>
+  );
+}
+
+// AgentAccessSection manages the global, read-only MCP tokens AI agents
+// use to reach /mcp. Lives here rather than on the per-project Settings
+// page because one token reads every project.
+function AgentAccessSection() {
+  const { tokens, error, issue, revoke } = useAccessTokens();
+  const [revealed, setRevealed] = useState<IssuedKey | null>(null);
+  const endpoint = `${window.location.origin}/mcp`;
+
+  return (
+    <>
+      <KeysSection
+        title="Agent access (MCP)"
+        emptyText="No tokens yet. Issue one to let an AI agent read your logs."
+        labelPlaceholder="claude-code laptop"
+        showLastUsed={false}
+        keys={tokens}
+        onIssue={async (label) => {
+          const issued = await issue(label);
+          setRevealed(issued);
+          return issued;
+        }}
+        onRevoke={revoke}
+      >
+        <p>
+          AI agents (Claude Code, Claude Desktop, Cursor, ...) connect to{' '}
+          <code>{endpoint}</code> with a read-only token. They can list projects,
+          search logs and read stats across every project, but never write.
+        </p>
+        {error ? <div className="banner banner-error">{error}</div> : null}
+      </KeysSection>
+
+      {revealed ? (
+        <KeyRevealModal
+          title="New MCP access token"
+          issued={revealed}
+          onClose={() => setRevealed(null)}
+        >
+          <p>Connect Claude Code:</p>
+          <pre className="modal-key">
+            {`claude mcp add --transport http mylogger42 ${endpoint} --header "Authorization: Bearer ${revealed.value}"`}
+          </pre>
+        </KeyRevealModal>
+      ) : null}
+    </>
   );
 }
 

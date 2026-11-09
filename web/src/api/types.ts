@@ -150,6 +150,12 @@ export interface ProjectKeysResponse {
   keys: ProjectKey[];
 }
 
+// AccessTokensResponse lists MCP read tokens. Same shape as ingest keys;
+// lastUsedAt is always null (token usage isn't tracked).
+export interface AccessTokensResponse {
+  tokens: ProjectKey[];
+}
+
 // IssuedKey is the create-time response, returned by both
 // POST /admin/projects (the initial key) and POST /admin/projects/:slug/keys.
 // The `value` field is the only place the plaintext mlk_..._... string

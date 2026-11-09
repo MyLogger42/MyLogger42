@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { IssuedKey } from '../api/types';
 
 interface Props {
   issued: IssuedKey;
   onClose: () => void;
+  title?: string;
+  children?: ReactNode; // extra guidance rendered under the value
 }
 
 // KeyRevealModal shows the freshly-issued plaintext key value exactly
@@ -14,7 +16,7 @@ interface Props {
 // The single "I've saved it — close" button is intentionally
 // non-frictional. We don't gate close on a typed acknowledgement; the
 // up-front warning is enough.
-export function KeyRevealModal({ issued, onClose }: Props) {
+export function KeyRevealModal({ issued, onClose, title = 'New ingest key', children }: Props) {
   const [copied, setCopied] = useState(false);
 
   function copyToClipboard() {
@@ -32,7 +34,7 @@ export function KeyRevealModal({ issued, onClose }: Props) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal">
-        <h2 className="modal-title">New ingest key</h2>
+        <h2 className="modal-title">{title}</h2>
         <p>
           Label: <strong>{issued.label}</strong>
         </p>
@@ -42,6 +44,7 @@ export function KeyRevealModal({ issued, onClose }: Props) {
         <pre className="modal-key" data-testid="issued-key">
           {issued.value}
         </pre>
+        {children}
         <div className="modal-actions">
           <button type="button" onClick={copyToClipboard}>
             {copied ? 'Copied' : 'Copy to clipboard'}

@@ -460,3 +460,73 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	s.authCache.invalidateAll()
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// --- /admin/tokens (MCP read tokens) ----------------------------------
+//
+// Tokens reuse keyDTO / issuedKeyDTO: same shape as ingest keys minus a
+// project, and lastUsedAt is always null (usage isn't tracked for them).
+
+// handleIssueToken implements POST /api/v1/admin/tokens. The plaintext
+// mlr_ value is returned once and never again.
+func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
+	var req issueKeyRequest
+	if !strictDecode(w, r, &req) {
+		return
+	}
+	req.Label = strings.TrimSpace(req.Label)
+	if req.Label == "" {
+		writeError(w, http.StatusBadRequest, "label is required")
+		return
+	}
+	issued, err := auth.GenerateReadToken()
+	if err != nil {
+		s.logger.Printf("admin: issue token: %v", err)
+		writeError(w, http.StatusInternalServerError, "issue token")
+		return
+	}
+	rec := domain.AccessToken{
+		ID:        uuid.NewString(),
+		Prefix:    issued.Prefix,
+		Label:     req.Label,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.tokens.Create(r.Context(), rec, auth.ComputeHMAC(s.pepper, issued.Secret)); err != nil {
+		s.logger.Printf("admin: issue token: %v", err)
+		writeError(w, http.StatusInternalServerError, "issue token")
+		return
+	}
+	writeJSON(w, http.StatusCreated, issuedKeyDTO{
+		ID: rec.ID, Prefix: rec.Prefix, Label: rec.Label, Value: issued.Value, CreatedAt: rec.CreatedAt,
+	})
+}
+
+// handleListTokens implements GET /api/v1/admin/tokens, revoked included.
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	toks, err := s.tokens.List(r.Context(), true)
+	if err != nil {
+		s.logger.Printf("admin: list tokens: %v", err)
+		writeError(w, http.StatusInternalServerError, "storage error")
+		return
+	}
+	out := make([]keyDTO, 0, len(toks))
+	for _, t := range toks {
+		out = append(out, keyDTO{ID: t.ID, Prefix: t.Prefix, Label: t.Label, CreatedAt: t.CreatedAt, RevokedAt: t.RevokedAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
+}
+
+// handleRevokeToken implements DELETE /api/v1/admin/tokens/{id}.
+// Idempotent; takes effect on the next MCP call (no auth cache).
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	err := s.tokens.Revoke(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "token not found")
+		return
+	}
+	if err != nil {
+		s.logger.Printf("admin: revoke token: %v", err)
+		writeError(w, http.StatusInternalServerError, "storage error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

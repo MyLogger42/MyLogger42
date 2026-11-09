@@ -1,4 +1,5 @@
 import type {
+  AccessTokensResponse,
   AuthMe,
   Health,
   CreateProjectRequest,
@@ -255,4 +256,23 @@ export async function revokeKey(slug: string, keyId: string): Promise<void> {
     `/api/v1/admin/projects/${encodeURIComponent(slug)}/keys/${encodeURIComponent(keyId)}`,
     { method: 'DELETE' },
   );
+}
+
+// --- admin: MCP access tokens -----------------------------------------
+
+export async function listTokens(): Promise<AccessTokensResponse> {
+  return jsonRequest<AccessTokensResponse>('/api/v1/admin/tokens');
+}
+
+export async function issueToken(req: IssueKeyRequest): Promise<IssuedKey> {
+  return jsonRequest<IssuedKey>('/api/v1/admin/tokens', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function revokeToken(id: string): Promise<void> {
+  await jsonRequest<void>(`/api/v1/admin/tokens/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
 }

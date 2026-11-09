@@ -102,6 +102,7 @@ func main() {
 		Keys:                stores.Keys,
 		Projects:            stores.Projects,
 		Users:               stores.Users,
+		Tokens:              stores.Tokens,
 		Hub:                 hub,
 		Logger:              logger,
 		Driver:              cfg.DBDriver,

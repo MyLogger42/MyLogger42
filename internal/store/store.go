@@ -90,6 +90,16 @@ type KeyStore interface {
 	NoteUsage(ctx context.Context, id string, when time.Time) error
 }
 
+// TokenStore manages read-only MCP access tokens. Same storage model as
+// KeyStore — (prefix, hmac) only — but tokens are global, not per project.
+type TokenStore interface {
+	Create(ctx context.Context, t domain.AccessToken, hmac string) error
+	GetActiveByPrefix(ctx context.Context, prefix string) (tok *domain.AccessToken, hexHMAC string, err error)
+	List(ctx context.Context, includeRevoked bool) ([]domain.AccessToken, error)
+	// Revoke is idempotent; ErrNotFound only when the id never existed.
+	Revoke(ctx context.Context, id string) error
+}
+
 // UserStore manages admin users. v2 expects exactly one row.
 type UserStore interface {
 	Create(ctx context.Context, u domain.User) error
@@ -99,7 +109,7 @@ type UserStore interface {
 	Count(ctx context.Context) (int, error)
 }
 
-// Stores bundles all four interfaces so callers can pass one value
+// Stores bundles all the store interfaces so callers can pass one value
 // through the bootstrap path. Closing the LogStore closes the shared
 // underlying connection — the other stores become unusable.
 type Stores struct {
@@ -107,6 +117,7 @@ type Stores struct {
 	Projects ProjectStore
 	Keys     KeyStore
 	Users    UserStore
+	Tokens   TokenStore
 }
 
 // Driver identifies a supported storage backend.

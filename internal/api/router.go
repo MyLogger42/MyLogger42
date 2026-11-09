@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mylogger42/mylogger42/internal/auth"
+	"github.com/mylogger42/mylogger42/internal/mcp"
 	"github.com/mylogger42/mylogger42/internal/store"
 	"github.com/mylogger42/mylogger42/internal/ws"
 )
@@ -20,6 +21,7 @@ type Server struct {
 	keys         store.KeyStore
 	projects     store.ProjectStore
 	users        store.UserStore
+	tokens       store.TokenStore
 	hub          *ws.Hub
 	logger       *log.Logger
 	startedAt    time.Time
@@ -48,6 +50,7 @@ type Config struct {
 	Keys                store.KeyStore
 	Projects            store.ProjectStore
 	Users               store.UserStore
+	Tokens              store.TokenStore
 	Hub                 *ws.Hub
 	Logger              *log.Logger
 	Driver              string
@@ -79,6 +82,7 @@ func NewServer(cfg Config) *Server {
 		keys:         cfg.Keys,
 		projects:     cfg.Projects,
 		users:        cfg.Users,
+		tokens:       cfg.Tokens,
 		hub:          cfg.Hub,
 		logger:       logger,
 		startedAt:    time.Now(),
@@ -164,6 +168,19 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/v1/admin/projects/{slug}/keys", adminWrite(s.handleIssueKey))
 	mux.Handle("GET /api/v1/admin/projects/{slug}/keys", adminRead(s.handleListKeys))
 	mux.Handle("DELETE /api/v1/admin/projects/{slug}/keys/{keyId}", adminWrite(s.handleRevokeKey))
+	if s.tokens != nil {
+		mux.Handle("POST /api/v1/admin/tokens", adminWrite(s.handleIssueToken))
+		mux.Handle("GET /api/v1/admin/tokens", adminRead(s.handleListTokens))
+		mux.Handle("DELETE /api/v1/admin/tokens/{id}", adminWrite(s.handleRevokeToken))
+	}
+
+	// MCP endpoint for AI agents — read-only, gated by a bearer read
+	// token (mlr_…), not the session cookie. Registered without a method
+	// so the SDK answers GET/DELETE with 405 itself.
+	if s.tokens != nil {
+		mux.Handle("/mcp", requireReadToken(s.tokens, s.pepper)(
+			mcp.NewHandler(s.store, s.projects, s.logger)))
+	}
 
 	// Public — health check stays open.
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
