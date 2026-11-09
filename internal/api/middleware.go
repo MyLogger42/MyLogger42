@@ -181,6 +181,49 @@ func requireProjectKey(
 	}
 }
 
+// --- MCP auth (Authorization: Bearer mlr_… → read access) -------------
+
+// requireReadToken gates the MCP endpoint. Same verify pipeline as
+// requireProjectKey (parse → prefix lookup → constant-time HMAC compare,
+// fake-verify on miss for timing parity) but against access_tokens, with
+// no cache: agent traffic is low and a live lookup makes revocation
+// instant. Ingest keys (mlk_) fail the parse, so they never grant reads.
+func requireReadToken(tokens store.TokenStore, pepper []byte) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			deny := func() {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="mylogger42"`)
+				writeError(w, http.StatusUnauthorized, "invalid access token")
+			}
+			raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if !ok {
+				deny()
+				return
+			}
+			prefix, secret, err := auth.ParseReadToken(strings.TrimSpace(raw))
+			if err != nil {
+				deny()
+				return
+			}
+			_, storedHMAC, err := tokens.GetActiveByPrefix(r.Context(), prefix)
+			if errors.Is(err, store.ErrNotFound) {
+				auth.FakeVerifyForTimingParity(pepper)
+				deny()
+				return
+			}
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "storage error")
+				return
+			}
+			if !auth.VerifyKey(pepper, secret, storedHMAC) {
+				deny()
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // --- ingest auth cache ------------------------------------------------
 //
 // Ingest auth cost two DB queries per log before this: one to resolve the

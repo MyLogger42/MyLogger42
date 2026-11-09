@@ -27,9 +27,12 @@ var (
 	// and double-click-selectable (no slashes or equals signs).
 	b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-	// keyPattern is the canonical "mlk_<12>_<32>" shape. Both halves are
-	// constrained to base32-lowercase (a-z + 2-7).
-	keyPattern = regexp.MustCompile(`^mlk_([a-z2-7]{12})_([a-z2-7]{32})$`)
+	// keyPattern / readTokenPattern are the canonical "<tag>_<12>_<32>"
+	// shapes. Both halves are constrained to base32-lowercase (a-z + 2-7).
+	// The tag keeps ingest keys (mlk) and MCP read tokens (mlr) from ever
+	// authenticating against each other's endpoints.
+	keyPattern       = regexp.MustCompile(`^mlk_([a-z2-7]{12})_([a-z2-7]{32})$`)
+	readTokenPattern = regexp.MustCompile(`^mlr_([a-z2-7]{12})_([a-z2-7]{32})$`)
 )
 
 // GenerateKey produces a fresh ingest key. Format is
@@ -38,7 +41,13 @@ var (
 //
 // Entropy: 8 bytes → 13 base32 chars (truncated to 12, ~60 bits) for the
 // prefix, 20 bytes → 32 base32 chars (~160 bits) for the secret.
-func GenerateKey() (*IssuedKey, error) {
+func GenerateKey() (*IssuedKey, error) { return generate("mlk") }
+
+// GenerateReadToken produces a fresh read-only MCP access token, same
+// shape as GenerateKey but tagged "mlr_".
+func GenerateReadToken() (*IssuedKey, error) { return generate("mlr") }
+
+func generate(tag string) (*IssuedKey, error) {
 	prefixBytes := make([]byte, 8)
 	secretBytes := make([]byte, 20)
 	if _, err := rand.Read(prefixBytes); err != nil {
@@ -52,7 +61,7 @@ func GenerateKey() (*IssuedKey, error) {
 	return &IssuedKey{
 		Prefix: prefix,
 		Secret: secret,
-		Value:  "mlk_" + prefix + "_" + secret,
+		Value:  tag + "_" + prefix + "_" + secret,
 	}, nil
 }
 
@@ -62,7 +71,17 @@ func GenerateKey() (*IssuedKey, error) {
 // The middleware path uses ParseKey first (cheap reject for malformed
 // input) and only proceeds to the DB lookup on a successful parse.
 func ParseKey(value string) (prefix, secret string, err error) {
-	m := keyPattern.FindStringSubmatch(value)
+	return parse(keyPattern, value)
+}
+
+// ParseReadToken is ParseKey for "mlr_" read tokens. Ingest keys are
+// rejected.
+func ParseReadToken(value string) (prefix, secret string, err error) {
+	return parse(readTokenPattern, value)
+}
+
+func parse(pattern *regexp.Regexp, value string) (prefix, secret string, err error) {
+	m := pattern.FindStringSubmatch(value)
 	if m == nil {
 		return "", "", errors.New("malformed key")
 	}
