@@ -135,6 +135,7 @@ func (s *Server) Routes() http.Handler {
 	// and scopes the underlying store query to that project.
 	sessionAuth := requireSession(s.signer, s.cookieSecure)
 	mux.Handle("GET /api/v1/logs", sessionAuth(http.HandlerFunc(s.handleQuery)))
+	mux.Handle("GET /api/v1/logs/export", sessionAuth(http.HandlerFunc(s.handleExport)))
 	mux.Handle("GET /api/v1/logs/{id}", sessionAuth(http.HandlerFunc(s.handleGetByIDRoute)))
 	mux.Handle("GET /api/v1/sources", sessionAuth(http.HandlerFunc(s.handleSources)))
 	mux.Handle("GET /api/v1/stats", sessionAuth(http.HandlerFunc(s.handleStats)))

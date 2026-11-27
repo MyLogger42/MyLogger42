@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +12,11 @@ import (
 
 	"github.com/mylogger42/mylogger42/internal/domain"
 	"github.com/mylogger42/mylogger42/internal/store"
+)
+
+const (
+	exportPageSize = 500
+	exportMaxRows  = 10000
 )
 
 // resolveProjectFromQuery is the shared lookup helper for read
@@ -223,4 +231,110 @@ func effectiveLimit(req int) int {
 		return 50
 	}
 	return req
+}
+
+// handleExport implements GET /api/v1/logs/export.
+//
+// Accepts the same project and filter query params as GET /api/v1/logs
+// plus format=ndjson (default) or format=csv. Results are capped at
+// exportMaxRows (10,000) to keep memory and response sizes bounded.
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	project, ok := s.resolveProjectFromQuery(w, r)
+	if !ok {
+		return
+	}
+	filter, err := parseQueryFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "ndjson"
+	}
+	if format != "ndjson" && format != "csv" {
+		writeError(w, http.StatusBadRequest, "format must be ndjson or csv")
+		return
+	}
+
+	maxRows := exportMaxRows
+	if filter.Limit > 0 && filter.Limit < maxRows {
+		maxRows = filter.Limit
+	}
+
+	entries := make([]domain.LogEntry, 0)
+	offset := filter.Offset
+	var total int
+	for len(entries) < maxRows {
+		pageSize := exportPageSize
+		if rem := maxRows - len(entries); rem < pageSize {
+			pageSize = rem
+		}
+		pageFilter := filter
+		pageFilter.Limit = pageSize
+		pageFilter.Offset = offset
+
+		items, t, err := s.store.Query(r.Context(), project.ID, pageFilter)
+		if err != nil {
+			s.logger.Printf("export query: %v", err)
+			writeError(w, http.StatusInternalServerError, "storage error")
+			return
+		}
+		total = t
+		entries = append(entries, items...)
+		if len(items) < pageSize || offset+len(items) >= total {
+			break
+		}
+		offset += len(items)
+	}
+
+	filename := fmt.Sprintf("%s-logs.%s", project.Slug, format)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	if total > filter.Offset+len(entries) && len(entries) >= maxRows {
+		w.Header().Set("X-Export-Truncated", "true")
+	}
+
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		cw := csv.NewWriter(w)
+		if err := cw.Write([]string{"id", "timestamp", "receivedAt", "level", "service", "message", "metadata"}); err != nil {
+			s.logger.Printf("export csv header: %v", err)
+			return
+		}
+		for _, e := range entries {
+			metaJSON := "{}"
+			if len(e.Metadata) > 0 {
+				if b, err := json.Marshal(e.Metadata); err == nil {
+					metaJSON = string(b)
+				}
+			}
+			row := []string{
+				e.ID,
+				e.Timestamp.UTC().Format(time.RFC3339Nano),
+				e.ReceivedAt.UTC().Format(time.RFC3339Nano),
+				string(e.Level),
+				e.Service,
+				e.Message,
+				metaJSON,
+			}
+			if err := cw.Write(row); err != nil {
+				s.logger.Printf("export csv row: %v", err)
+				return
+			}
+		}
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			s.logger.Printf("export csv flush: %v", err)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	enc := json.NewEncoder(w)
+	for _, e := range entries {
+		if err := enc.Encode(e); err != nil {
+			s.logger.Printf("export ndjson row: %v", err)
+			return
+		}
+	}
 }

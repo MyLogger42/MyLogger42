@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +200,169 @@ func TestStatsBucketAllowlist(t *testing.T) {
 		if rr.Code != tc.want {
 			t.Errorf("%s: status = %d, want %d; body=%s", tc.query, rr.Code, tc.want, rr.Body.String())
 		}
+	}
+}
+
+type exportCapturingStore struct {
+	fakeLogStore
+	entries []domain.LogEntry
+	queries []domain.QueryFilter
+}
+
+func (f *exportCapturingStore) Query(_ context.Context, _ string, filter domain.QueryFilter) ([]domain.LogEntry, int, error) {
+	f.queries = append(f.queries, filter)
+	total := len(f.entries)
+	start := filter.Offset
+	if start >= total {
+		return []domain.LogEntry{}, total, nil
+	}
+	end := start + filter.Limit
+	if filter.Limit <= 0 || end > total {
+		end = total
+	}
+	return f.entries[start:end], total, nil
+}
+
+func TestExportValidation(t *testing.T) {
+	s := queryTestServer(t, map[string]*domain.Project{"auth-svc": {ID: "p1"}})
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"", http.StatusBadRequest},
+		{"?project=missing", http.StatusNotFound},
+		{"?project=auth-svc&format=xml", http.StatusBadRequest},
+		{"?project=auth-svc&level=bogus", http.StatusBadRequest},
+		{"?project=auth-svc&format=ndjson", http.StatusOK},
+		{"?project=auth-svc&format=csv", http.StatusOK},
+		{"?project=auth-svc", http.StatusOK},
+	}
+	for _, tc := range cases {
+		rr := httptest.NewRecorder()
+		s.handleExport(rr, httptest.NewRequest(http.MethodGet, "/api/v1/logs/export"+tc.query, nil))
+		if rr.Code != tc.want {
+			t.Errorf("%s: status = %d, want %d; body=%s", tc.query, rr.Code, tc.want, rr.Body.String())
+		}
+	}
+}
+
+func TestExportNDJSONAndCSV(t *testing.T) {
+	ts := time.Date(2026, 11, 27, 1, 0, 0, 0, time.UTC)
+	st := &exportCapturingStore{
+		entries: []domain.LogEntry{
+			{
+				ID:         "e1",
+				ProjectID:  "p1",
+				Service:    "api",
+				Level:      domain.LevelError,
+				Message:    `boom, "quoted"`,
+				Timestamp:  ts,
+				ReceivedAt: ts,
+				Metadata:   map[string]any{"code": float64(500)},
+			},
+			{
+				ID:         "e2",
+				ProjectID:  "p1",
+				Service:    "worker",
+				Level:      domain.LevelInfo,
+				Message:    "started",
+				Timestamp:  ts.Add(time.Second),
+				ReceivedAt: ts.Add(time.Second),
+				Metadata:   map[string]any{},
+			},
+		},
+	}
+	s := &Server{
+		store:    st,
+		projects: &fakeProjectStoreWithSlugs{bySlug: map[string]*domain.Project{"auth-svc": {ID: "p1", Slug: "auth-svc"}}},
+		logger:   log.New(io.Discard, "", 0),
+	}
+
+	// NDJSON
+	rr := httptest.NewRecorder()
+	s.handleExport(rr, httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?project=auth-svc&format=ndjson&service=api", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ndjson status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/x-ndjson") {
+		t.Errorf("ndjson Content-Type = %q", ct)
+	}
+	if cd := rr.Header().Get("Content-Disposition"); cd != `attachment; filename="auth-svc-logs.ndjson"` {
+		t.Errorf("ndjson Content-Disposition = %q", cd)
+	}
+	lines := strings.Split(strings.TrimSpace(rr.Body.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ndjson lines = %d, want 2", len(lines))
+	}
+	var got domain.LogEntry
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("ndjson unmarshal: %v", err)
+	}
+	if got.ID != "e1" || got.Message != `boom, "quoted"` {
+		t.Errorf("ndjson first entry = %+v", got)
+	}
+	if len(st.queries) == 0 || st.queries[0].Service != "api" {
+		t.Errorf("filter not forwarded to store: %+v", st.queries)
+	}
+
+	// CSV
+	rr = httptest.NewRecorder()
+	s.handleExport(rr, httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?project=auth-svc&format=csv", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("csv status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("csv Content-Type = %q", ct)
+	}
+	if cd := rr.Header().Get("Content-Disposition"); cd != `attachment; filename="auth-svc-logs.csv"` {
+		t.Errorf("csv Content-Disposition = %q", cd)
+	}
+	records, err := csv.NewReader(strings.NewReader(rr.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("csv parse: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("csv rows = %d, want 3 (header + 2)", len(records))
+	}
+	if records[1][0] != "e1" || records[1][5] != `boom, "quoted"` || records[1][6] != `{"code":500}` {
+		t.Errorf("csv row 1 = %v", records[1])
+	}
+	if records[2][6] != "{}" {
+		t.Errorf("csv row 2 metadata = %q, want {}", records[2][6])
+	}
+}
+
+func TestExportCapsAtMaxRows(t *testing.T) {
+	ts := time.Date(2026, 11, 27, 1, 0, 0, 0, time.UTC)
+	entries := make([]domain.LogEntry, exportMaxRows+25)
+	for i := range entries {
+		entries[i] = domain.LogEntry{
+			ID:         "id",
+			ProjectID:  "p1",
+			Service:    "api",
+			Level:      domain.LevelInfo,
+			Message:    "msg",
+			Timestamp:  ts,
+			ReceivedAt: ts,
+		}
+	}
+	st := &exportCapturingStore{entries: entries}
+	s := &Server{
+		store:    st,
+		projects: &fakeProjectStoreWithSlugs{bySlug: map[string]*domain.Project{"auth-svc": {ID: "p1", Slug: "auth-svc"}}},
+		logger:   log.New(io.Discard, "", 0),
+	}
+
+	rr := httptest.NewRecorder()
+	s.handleExport(rr, httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?project=auth-svc&format=ndjson", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.Header().Get("X-Export-Truncated") != "true" {
+		t.Errorf("expected X-Export-Truncated=true, got %q", rr.Header().Get("X-Export-Truncated"))
+	}
+	lines := strings.Split(strings.TrimSpace(rr.Body.String()), "\n")
+	if len(lines) != exportMaxRows {
+		t.Errorf("exported %d lines, want %d", len(lines), exportMaxRows)
 	}
 }
