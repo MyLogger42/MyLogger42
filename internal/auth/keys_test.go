@@ -122,3 +122,25 @@ func TestFakeVerifyForTimingParityNoOp(t *testing.T) {
 	// VerifyKey when the prefix lookup misses.
 	FakeVerifyForTimingParity([]byte("pepper"))
 }
+
+func TestReadTokenRoundTripAndIsolation(t *testing.T) {
+	tok, err := GenerateReadToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(tok.Value, "mlr_") {
+		t.Fatalf("read token %q lacks mlr_ tag", tok.Value)
+	}
+	prefix, secret, err := ParseReadToken(tok.Value)
+	if err != nil || prefix != tok.Prefix || secret != tok.Secret {
+		t.Fatalf("ParseReadToken(%q) = %q, %q, %v", tok.Value, prefix, secret, err)
+	}
+	// Tags must not cross: an ingest key never reads, a read token never ingests.
+	if _, _, err := ParseKey(tok.Value); err == nil {
+		t.Fatal("ParseKey accepted a read token")
+	}
+	ingest, _ := GenerateKey()
+	if _, _, err := ParseReadToken(ingest.Value); err == nil {
+		t.Fatal("ParseReadToken accepted an ingest key")
+	}
+}

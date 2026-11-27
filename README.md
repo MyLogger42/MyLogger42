@@ -8,7 +8,7 @@
 and you read them back in a browser — search, filter, or watch them stream in live.
 
 [![CI](https://github.com/MyLogger42/MyLogger42/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLogger42/MyLogger42/actions/workflows/ci.yml)
-[![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ![Logs view with expanded entry](screenshots/screenshot3.png)
@@ -27,6 +27,7 @@ and you read them back in a browser — search, filter, or watch them stream in 
 - 🔐 **Locked down** — bcrypt admin login, rate-limited auth, HMAC-fingerprinted ingest keys, per-key revocation.
 - ♻️ **Retention** — background purge worker, per-project overrides, `0` = keep forever.
 - 🐳 **One-command deploy** — `docker compose up`, secrets auto-generated on first boot.
+- 🤖 **AI agent access (MCP)** — read-only `/mcp` endpoint so Claude Code, Claude Desktop, Cursor & co. can browse projects, search logs and read stats.
 - 🚀 **VictoriaLogs optional** — SQLite by default; switch the log engine with two env vars when one file stops being enough.
 
 ---
@@ -309,6 +310,68 @@ while staying on whichever tab you were looking at.
 
 ---
 
+## Connecting AI agents (MCP)
+
+MyLogger42 serves a [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint at `/mcp`, so an AI agent can look around your logs on its own:
+find the noisy project, see which service started erroring, read the
+entries. It is **read-only** — no tool can write, delete or change
+settings.
+
+**1. Issue a token.** On the **Projects** page, under **Agent access
+(MCP)**, click **Issue new key**. Or from the CLI:
+
+```sh
+./bin/mylogger42 admin issue-token --label=claude-laptop
+```
+
+The `mlr_…` value is shown once. One token reads **every** project; issue
+one per agent/machine so you can revoke them independently. Ingest keys
+(`mlk_…`) don't work here, and read tokens don't work for ingest.
+
+**2. Connect your agent.** Claude Code:
+
+```sh
+claude mcp add --transport http mylogger42 http://localhost:8080/mcp \
+  --header "Authorization: Bearer mlr_…"
+```
+
+Any client that speaks Streamable HTTP takes the same two things, e.g.:
+
+```json
+{
+  "mcpServers": {
+    "mylogger42": {
+      "type": "http",
+      "url": "https://logs.example.com/mcp",
+      "headers": { "Authorization": "Bearer mlr_…" }
+    }
+  }
+}
+```
+
+Then ask: *"What's going on in my logs today?"*
+
+**Tools**
+
+| Tool | What it does |
+|------|--------------|
+| `list_projects` | Projects with slug, name, retention, archived state. |
+| `list_services` | Services in a project, with first/last seen and entry count. |
+| `log_stats` | Level-over-time histogram, per-level totals, top repeated messages. Same filters as `search_logs`. |
+| `search_logs` | Entries filtered by service, level, time range (RFC3339), message substring; paged, max 200 per call. |
+| `get_log` | One entry by id, full metadata. |
+
+**Revoke** a token with its row's **Revoke** button, or
+`mylogger42 admin revoke-token <token-id>` (`list-tokens` shows ids). It
+stops working on the agent's next call — token checks aren't cached.
+
+Outside localhost, put the server behind HTTPS (see [TLS reverse
+proxy](#running-behind-a-tls-reverse-proxy)): the token travels in a
+header on every request.
+
+---
+
 ## Run from source
 
 ### 1. Build
@@ -320,7 +383,7 @@ make build
 This builds the React UI and the Go binary, embeds the UI into the
 binary, and writes the result to `bin/mylogger42`.
 
-> Prerequisites: Go 1.22+, Node 20+, npm. SQLite is built in (no
+> Prerequisites: Go 1.25+, Node 20+, npm. SQLite is built in (no
 > system library needed).
 
 ### 2. Bootstrap (one command)
@@ -581,9 +644,10 @@ work the same as in production.
 cmd/server/         program entry point + admin subcommand dispatch
 internal/admin/     CLI subcommands (init, create-project, …)
 internal/api/       HTTP routing, handlers, middleware (auth, admin)
-internal/auth/      key generation/verification, bcrypt, session JWTs
+internal/auth/      key + MCP token generation/verification, bcrypt, session JWTs
+internal/mcp/       read-only MCP server (tools over LogStore/ProjectStore)
 internal/domain/    LogEntry, Project, ProjectKey, User, filters
-internal/store/     LogStore + ProjectStore + KeyStore + UserStore
+internal/store/     LogStore + ProjectStore + KeyStore + UserStore + TokenStore
 internal/retention/ per-project purge worker
 internal/ws/        WebSocket hub + per-client goroutines
 web/                React + Vite SPA, embedded into the binary

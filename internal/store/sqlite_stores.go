@@ -35,6 +35,7 @@ func OpenSQLiteStores(ctx context.Context, dsn string) (*Stores, error) {
 		Projects: &sqliteProjectStore{db: ss.db},
 		Keys:     &sqliteKeyStore{db: ss.db},
 		Users:    &sqliteUserStore{db: ss.db},
+		Tokens:   &sqliteTokenStore{db: ss.db},
 	}, nil
 }
 
@@ -343,6 +344,88 @@ func scanSqliteKeyRows(rows *sql.Rows) (*domain.ProjectKey, string, error) {
 		k.RevokedAt = &t
 	}
 	return &k, hmac, nil
+}
+
+type sqliteTokenStore struct{ db *sql.DB }
+
+const tokenCols = `id, prefix, hmac, label, created_at, revoked_at`
+
+func (s *sqliteTokenStore) Create(ctx context.Context, t domain.AccessToken, hmac string) error {
+	const q = `INSERT INTO access_tokens (id, prefix, hmac, label, created_at)
+	           VALUES (?, ?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, q, t.ID, t.Prefix, hmac, t.Label, t.CreatedAt.UTC())
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return ErrAlreadyExists
+	}
+	return err
+}
+
+func (s *sqliteTokenStore) GetActiveByPrefix(ctx context.Context, prefix string) (*domain.AccessToken, string, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+tokenCols+` FROM access_tokens WHERE prefix = ? AND revoked_at IS NULL`, prefix)
+	t, hmac, err := scanToken(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	return t, hmac, err
+}
+
+func (s *sqliteTokenStore) List(ctx context.Context, includeRevoked bool) ([]domain.AccessToken, error) {
+	q := `SELECT ` + tokenCols + ` FROM access_tokens`
+	if !includeRevoked {
+		q += ` WHERE revoked_at IS NULL`
+	}
+	q += ` ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AccessToken
+	for rows.Next() {
+		t, _, err := scanToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteTokenStore) Revoke(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE access_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
+		time.Now().UTC(), id); err != nil {
+		return err
+	}
+	// Idempotent: already-revoked is fine, never-existed is ErrNotFound.
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM access_tokens WHERE id = ?`, id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// scanToken reads one access_tokens row from either *sql.Row or *sql.Rows.
+func scanToken(row interface{ Scan(...any) error }) (*domain.AccessToken, string, error) {
+	var (
+		t       domain.AccessToken
+		hmac    string
+		revoked sql.NullTime
+	)
+	if err := row.Scan(&t.ID, &t.Prefix, &hmac, &t.Label, &t.CreatedAt, &revoked); err != nil {
+		return nil, "", err
+	}
+	t.CreatedAt = t.CreatedAt.UTC()
+	if revoked.Valid {
+		r := revoked.Time.UTC()
+		t.RevokedAt = &r
+	}
+	return &t, hmac, nil
 }
 
 type sqliteUserStore struct{ db *sql.DB }

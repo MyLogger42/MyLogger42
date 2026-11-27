@@ -216,6 +216,10 @@ mylogger42 admin list-projects
 mylogger42 admin issue-key <slug> [--label=...]
 mylogger42 admin revoke-key <key-id>
 mylogger42 admin delete-project <slug> --force   # hard delete (CLI only)
+
+mylogger42 admin issue-token [--label=...]       # read-only MCP token (mlr_…), printed once
+mylogger42 admin list-tokens                     # id, prefix, label, state, created
+mylogger42 admin revoke-token <token-id>
 ```
 
 `init`, `generate-secrets`, and `hash-password` need no environment.

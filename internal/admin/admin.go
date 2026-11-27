@@ -60,6 +60,12 @@ func Run(args []string, cfg Config) error {
 		return runIssueKey(context.Background(), os.Stdout, cfg, rest)
 	case "revoke-key":
 		return runRevokeKey(context.Background(), os.Stderr, cfg, rest)
+	case "issue-token":
+		return runIssueToken(context.Background(), os.Stdout, cfg, rest)
+	case "list-tokens":
+		return runListTokens(context.Background(), os.Stdout, cfg)
+	case "revoke-token":
+		return runRevokeToken(context.Background(), os.Stderr, cfg, rest)
 	case "delete-project":
 		return runDeleteProject(context.Background(), os.Stderr, cfg, rest)
 	case "help", "-h", "--help":
@@ -100,6 +106,9 @@ Subcommands:
   issue-key <slug> [--label=...] print the freshly-issued key value once
   revoke-key <key-id>
   delete-project <slug> --force  hard delete (NOT exposed via API)
+  issue-token [--label=...]      print a fresh read-only MCP token (mlr_...) once
+  list-tokens
+  revoke-token <token-id>
 
 The DB-touching subcommands open the same database the server uses
 (DB_DSN, DB_DRIVER). KEY_PEPPER and SESSION_SECRET must be set just
