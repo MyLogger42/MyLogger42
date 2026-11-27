@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { ActiveFilterPills } from '../components/ActiveFilterPills';
 import {
   FilterBar,
@@ -13,31 +13,117 @@ import { useLogs } from '../hooks/useLogs';
 import { useStats } from '../hooks/useStats';
 import { useSources } from '../hooks/useSources';
 import { exportLogs, type ExportFormat } from '../api/client';
-import type { LogLevel, LogsQuery, MessageGroup, StatsQuery } from '../api/types';
+import {
+  ALL_LEVELS,
+  BUCKET_OPTIONS,
+  type LogLevel,
+  type LogsQuery,
+  type MessageGroup,
+  type StatsQuery,
+} from '../api/types';
 
 const PAGE_SIZE = 50;
+const DEFAULT_BUCKET = 3600;
 
-const initialFilter: FilterValues = {
-  service: '',
-  level: '',
-  search: '',
-  from: '',
-  to: '',
-  levels: [],
-};
+function parseTimeParam(raw: string | null): string {
+  if (!raw) return '';
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? '' : rfc3339ToLocal(d);
+}
+
+function parseLevelParam(raw: string | null): LogLevel | '' {
+  if (!raw) return '';
+  return ALL_LEVELS.includes(raw as LogLevel) ? (raw as LogLevel) : '';
+}
+
+function parseBucketParam(raw: string | null): number {
+  if (!raw) return DEFAULT_BUCKET;
+  const n = Number(raw);
+  return BUCKET_OPTIONS.some((o) => o.seconds === n) ? n : DEFAULT_BUCKET;
+}
+
+function parseOffsetParam(raw: string | null): number {
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
 
 // LogsPage is the per-project history view: the stats panel on top
 // (histogram / level totals / most-repeated), the filtered list below.
 //
-// `filter` is the single source of truth for both. It is passed back into
-// FilterBar as `initial`, which is what lets the stats panel act as a set
-// of filter controls — clicking a histogram bar or a level chip writes
-// into the same state the form edits.
+// URL search params are the single source of truth for filters, bucket
+// size, and pagination offset so refreshes, back/forward, and shared
+// links preserve the view.
 export function LogsPage() {
   const { slug = '' } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { sources } = useSources(slug);
-  const [filter, setFilter] = useState<FilterValues>(initialFilter);
-  const [bucket, setBucket] = useState(3600);
+
+  const filter = useMemo<FilterValues>(() => {
+    return {
+      service: searchParams.get('service') ?? '',
+      level: parseLevelParam(searchParams.get('level')),
+      search: searchParams.get('search') ?? '',
+      from: parseTimeParam(searchParams.get('from')),
+      to: parseTimeParam(searchParams.get('to')),
+      levels: [],
+    };
+  }, [searchParams]);
+
+  const bucket = useMemo(
+    () => parseBucketParam(searchParams.get('bucket')),
+    [searchParams],
+  );
+  const pageOffset = useMemo(
+    () => parseOffsetParam(searchParams.get('offset')),
+    [searchParams],
+  );
+
+  const updateParams = useCallback(
+    (mutator: (next: URLSearchParams) => void) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        mutator(next);
+        return next.toString() === prev.toString() ? prev : next;
+      });
+    },
+    [setSearchParams],
+  );
+
+  const handleFilterChange = useCallback(
+    (next: FilterValues) => {
+      if (
+        next.service === filter.service &&
+        next.level === filter.level &&
+        next.search === filter.search &&
+        next.from === filter.from &&
+        next.to === filter.to
+      ) {
+        return;
+      }
+      updateParams((p) => {
+        if (next.service) p.set('service', next.service);
+        else p.delete('service');
+
+        if (next.level) p.set('level', next.level);
+        else p.delete('level');
+
+        if (next.search) p.set('search', next.search);
+        else p.delete('search');
+
+        const fromIso = localToRfc3339(next.from);
+        if (fromIso) p.set('from', fromIso);
+        else p.delete('from');
+
+        const toIso = localToRfc3339(next.to);
+        if (toIso) p.set('to', toIso);
+        else p.delete('to');
+
+        p.delete('offset');
+      });
+    },
+    [filter, updateParams],
+  );
 
   const query = useMemo<LogsQuery>(() => {
     return {
@@ -48,10 +134,10 @@ export function LogsPage() {
       from: localToRfc3339(filter.from) || undefined,
       to: localToRfc3339(filter.to) || undefined,
       limit: PAGE_SIZE,
-      offset: 0,
+      offset: pageOffset,
       sort: 'desc',
     };
-  }, [slug, filter]);
+  }, [slug, filter, pageOffset]);
 
   // Same filter, no paging: the panels describe the whole matched range.
   const statsQuery = useMemo<StatsQuery>(() => {
@@ -59,7 +145,7 @@ export function LogsPage() {
     return { ...rest, bucket };
   }, [query, bucket]);
 
-  const { items, total, limit, offset, loading, error, setOffset } = useLogs(query);
+  const { items, total, limit, offset, loading, error } = useLogs(query);
   const { stats, loading: statsLoading, error: statsError } = useStats(statsQuery);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -104,12 +190,23 @@ export function LogsPage() {
   const totalPages = limit > 0 ? Math.max(1, Math.ceil(total / limit)) : 1;
   const currentPage = limit > 0 ? Math.floor(offset / limit) + 1 : 1;
 
+  const setOffset = useCallback(
+    (nextOffset: number) => {
+      updateParams((p) => {
+        if (nextOffset <= 0) p.delete('offset');
+        else p.set('offset', String(nextOffset));
+      });
+    },
+    [updateParams],
+  );
+
   return (
     <section className="page page-logs">
       <FilterBar
         sources={sources}
         initial={filter}
-        onChange={setFilter}
+        timePresets
+        onChange={handleFilterChange}
         busy={loading}
       />
 
@@ -128,27 +225,36 @@ export function LogsPage() {
         stats={stats}
         loading={statsLoading}
         bucketSeconds={bucket}
-        onBucketChange={setBucket}
+        onBucketChange={(seconds) =>
+          updateParams((p) => {
+            if (seconds === DEFAULT_BUCKET) p.delete('bucket');
+            else p.set('bucket', String(seconds));
+          })
+        }
         onSelectRange={(from, to) =>
-          setFilter((f) => ({
-            ...f,
-            from: rfc3339ToLocal(from),
-            to: rfc3339ToLocal(to),
-          }))
+          updateParams((p) => {
+            p.set('from', from.toISOString());
+            p.set('to', to.toISOString());
+            p.delete('offset');
+          })
         }
         onSelectLevel={(level: LogLevel) =>
           // Clicking the active level again clears it — the chip is a
           // toggle, otherwise there's no way back to "all levels"
           // without hunting for the dropdown.
-          setFilter((f) => ({ ...f, level: f.level === level ? '' : level }))
+          updateParams((p) => {
+            if (filter.level === level) p.delete('level');
+            else p.set('level', level);
+            p.delete('offset');
+          })
         }
         onSelectMessage={(g: MessageGroup) =>
-          setFilter((f) => ({
-            ...f,
-            service: g.service,
-            level: g.level,
-            search: g.message,
-          }))
+          updateParams((p) => {
+            p.set('service', g.service);
+            p.set('level', g.level);
+            p.set('search', g.message);
+            p.delete('offset');
+          })
         }
       />
 
@@ -191,7 +297,7 @@ export function LogsPage() {
         </div>
       </div>
 
-      <ActiveFilterPills filter={filter} onChange={setFilter} />
+      <ActiveFilterPills filter={filter} onChange={handleFilterChange} />
 
       <LogList items={items} />
 

@@ -212,8 +212,63 @@ input:-webkit-autofill:focus {
 }
 
 .filter-busy {
-  align-self: end;
   color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.filter-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-presets-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  margin-right: 2px;
+}
+
+.preset-btn,
+.filter-clear-btn {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.preset-btn:hover:not(:disabled),
+.filter-clear-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--fg);
+}
+
+.filter-clear-btn:disabled {
+  background: transparent;
+  color: var(--fg-placeholder);
+  border-color: var(--border);
+  opacity: 0.6;
+}
+
+.filter-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .banner {
