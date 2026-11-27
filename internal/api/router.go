@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -21,7 +21,7 @@ type Server struct {
 	projects     store.ProjectStore
 	users        store.UserStore
 	hub          *ws.Hub
-	logger       *log.Logger
+	logger       *slog.Logger
 	startedAt    time.Time
 	driver       string
 	staticFS     fs.FS // optional embedded SPA assets
@@ -32,7 +32,6 @@ type Server struct {
 	trustProxy   bool
 	signer       *auth.SessionSigner
 	cookieSecure func(*http.Request) bool
-	accessLog    bool
 }
 
 // Config bundles the dependencies required to build a Server.
@@ -49,24 +48,20 @@ type Config struct {
 	Projects            store.ProjectStore
 	Users               store.UserStore
 	Hub                 *ws.Hub
-	Logger              *log.Logger
+	Logger              *slog.Logger
 	Driver              string
 	StaticFS            fs.FS
 	Pepper              []byte
 	Signer              *auth.SessionSigner
 	CookieSecure        func(*http.Request) bool
 	TrustForwardedProto bool
-	// LogLevel controls the per-request access log: "warn" and "error"
-	// silence it, anything else (default "info") keeps it on. Error
-	// logging is unconditional either way.
-	LogLevel string
 }
 
 // NewServer wires up handler dependencies. It does not start anything.
 func NewServer(cfg Config) *Server {
 	logger := cfg.Logger
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
 	cookieSecure := cfg.CookieSecure
 	if cookieSecure == nil {
@@ -91,7 +86,6 @@ func NewServer(cfg Config) *Server {
 		trustProxy:   cfg.TrustForwardedProto,
 		signer:       cfg.Signer,
 		cookieSecure: cookieSecure,
-		accessLog:    cfg.LogLevel != "warn" && cfg.LogLevel != "error",
 	}
 }
 
@@ -186,9 +180,8 @@ func (s *Server) Routes() http.Handler {
 	// is required because read/admin endpoints rely on the session
 	// cookie — `Allow-Origin: *` + credentials is forbidden.
 	var handler http.Handler = mux
-	if s.accessLog {
-		handler = withLogging(s.logger, handler)
-	}
+	handler = withLogging(s.logger, s.trustProxy, handler)
+	handler = withRequestID(handler)
 	return withCORSCredentials(handler)
 }
 
@@ -268,7 +261,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "live tail not enabled")
 		return
 	}
-	ws.ServeWS(s.hub, s.projects, s.logger, w, r)
+	ws.ServeWS(s.hub, s.projects, slog.NewLogLogger(s.logger.Handler(), slog.LevelInfo), w, r)
 }
 
 // spaHandler serves the embedded React build. Unknown paths under the

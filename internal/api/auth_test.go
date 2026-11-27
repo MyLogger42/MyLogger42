@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,7 +59,7 @@ func authTestServer(t *testing.T, password string) (*Server, *fakeUserStore) {
 		signer:       signer,
 		cookieSecure: func(*http.Request) bool { return false },
 		loginLimiter: newLoginRateLimiter(),
-		logger:       log.New(io.Discard, "", 0),
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, users
 }
 

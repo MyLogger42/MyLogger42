@@ -74,7 +74,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.logger.Printf("login: lookup: %v", err)
+		s.logger.Error("login: lookup", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -91,7 +91,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	tok, err := s.signer.Issue(user.ID, user.Username, time.Now().UTC())
 	if err != nil {
-		s.logger.Printf("login: issue: %v", err)
+		s.logger.Error("login: issue", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "issue session")
 		return
 	}

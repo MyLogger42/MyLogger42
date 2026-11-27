@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -515,7 +515,7 @@ func TestArchiveProjectHandlerInvalidatesAuthCache(t *testing.T) {
 	srv := &Server{
 		projects:  projects,
 		authCache: cache,
-		logger:    log.New(io.Discard, "", 0),
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	if got := ingest(t, mw, validKey); got != http.StatusNoContent {

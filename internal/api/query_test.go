@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,7 +29,7 @@ func queryTestServer(t *testing.T, projects map[string]*domain.Project) *Server 
 	return &Server{
 		store:    &fakeLogStore{},
 		projects: &fakeProjectStoreWithSlugs{byID: byID, bySlug: bySlug},
-		logger:   log.New(io.Discard, "", 0),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
