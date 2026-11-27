@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ALL_LEVELS, type LogLevel, type Source } from '../api/types';
 
 export interface FilterValues {
@@ -28,18 +28,30 @@ interface Props {
 // array (the LiveTailFilter accepts a list).
 export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Props) {
   const [v, setV] = useState<FilterValues>(initial);
+  // Track the last filter snapshot synced from `initial` or emitted via
+  // `onChange` so neither initial mount nor parent-driven resets re-emit.
+  const lastSyncedRef = useRef<string>(JSON.stringify(initial));
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   // Reset local state when the parent swaps the initial value out.
   useEffect(() => {
+    lastSyncedRef.current = JSON.stringify(initial);
     setV(initial);
   }, [initial]);
 
+  const vKey = JSON.stringify(v);
+
   // Debounce text/search changes so we don't fire a request per keystroke.
   useEffect(() => {
-    const id = window.setTimeout(() => onChange(v), 250);
+    if (vKey === lastSyncedRef.current) return;
+    const id = window.setTimeout(() => {
+      lastSyncedRef.current = vKey;
+      onChangeRef.current(v);
+    }, 250);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(v)]);
+  }, [vKey]);
 
   function toggleLevel(level: LogLevel) {
     setV((prev) => ({
