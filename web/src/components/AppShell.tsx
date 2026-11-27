@@ -59,19 +59,20 @@ export function AppShell() {
             </NavLink>
           </nav>
         ) : null}
-        <div className="app-spacer" />
-        <span className="app-user">{user?.username}</span>
-        <button
-          type="button"
-          className="app-logout"
-          onClick={() => {
-            void logout();
-          }}
-          aria-label="Log out"
-          title="Log out"
-        >
-          ⏻
-        </button>
+        <div className="app-user-actions">
+          <span className="app-user">{user?.username}</span>
+          <button
+            type="button"
+            className="app-logout"
+            onClick={() => {
+              void logout();
+            }}
+            aria-label="Log out"
+            title="Log out"
+          >
+            ⏻
+          </button>
+        </div>
       </header>
       <main className="app-main">
         <Outlet />
