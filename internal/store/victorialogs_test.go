@@ -79,6 +79,26 @@ func TestBuildLogsQL(t *testing.T) {
 			domain.QueryFilter{Service: "api"},
 			`project_id:="proj_1" AND service:="api"`,
 		},
+		{
+			"MultiLevels",
+			domain.QueryFilter{Levels: []domain.LogLevel{domain.LevelWarning, domain.LevelError, domain.LevelFatal}},
+			`project_id:="proj_1" AND (level:="Warning" OR level:="Error" OR level:="Fatal")`,
+		},
+		{
+			"MinLevel",
+			domain.QueryFilter{MinLevel: domain.LevelError},
+			`project_id:="proj_1" AND (level:="Error" OR level:="Fatal")`,
+		},
+		{
+			"SingleLevelViaSlice",
+			domain.QueryFilter{Levels: []domain.LogLevel{domain.LevelWarning}},
+			`project_id:="proj_1" AND level:="Warning"`,
+		},
+		{
+			"EmptyEffectiveLevels",
+			domain.QueryFilter{Level: domain.LevelInfo, MinLevel: domain.LevelWarning},
+			`project_id:="proj_1" AND level:=""`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
