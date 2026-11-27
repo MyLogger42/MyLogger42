@@ -1,10 +1,7 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"io"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -46,16 +43,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	defer constantTimeFloor()()
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
-		return
-	}
 	var req loginRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid payload: "+err.Error())
+	if !strictDecodeLimited(w, r, 4096, &req) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)

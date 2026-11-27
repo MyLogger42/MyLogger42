@@ -329,6 +329,8 @@ func (s *sqliteStore) Query(ctx context.Context, projectID string, f domain.Quer
 	return out, total, nil
 }
 
+var likeReplacer = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 // buildWhereSQLite constructs the WHERE clause and ordered args. The
 // project_id predicate is always present (it's the v2 scoping anchor)
 // and leads the clause list so the composite (project_id, timestamp DESC)
@@ -353,8 +355,8 @@ func buildWhereSQLite(projectID string, f domain.QueryFilter) (string, []any) {
 		args = append(args, f.To.UTC())
 	}
 	if f.Search != "" {
-		clauses = append(clauses, "message LIKE ?")
-		args = append(args, "%"+f.Search+"%")
+		clauses = append(clauses, `message LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+likeReplacer.Replace(f.Search)+"%")
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
