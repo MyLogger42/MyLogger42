@@ -42,6 +42,8 @@ export function LogList({
         const isOpen = expandedId === entry.id;
         const accent = LEVEL_COLORS[entry.level]?.bg ?? '#6b7280';
         const repeats = group.length;
+        const hasMetadata =
+          entry.metadata != null && Object.keys(entry.metadata).length > 0;
         return (
           <li key={entry.id} className={`log-row ${isOpen ? 'log-row-open' : ''}`}>
             <button
@@ -51,16 +53,34 @@ export function LogList({
               onClick={() => setExpandedId(isOpen ? null : entry.id)}
               aria-expanded={isOpen}
             >
-              <span className="log-row-time">{formatTimestamp(entry.timestamp)}</span>
+              <span className="log-row-time" title={entry.timestamp}>
+                {formatTimestamp(entry.timestamp)}
+              </span>
               <LevelBadge level={entry.level} />
               <span className="log-row-service">{entry.service}</span>
-              <span className="log-row-message">{entry.message}</span>
-              {repeats > 1 ? (
-                <span
-                  className="log-row-repeat"
-                  aria-label={`repeated ${repeats} times in a row`}
-                >
-                  ×{repeats}
+              <span className="log-row-content">
+                <span className="log-row-message">{entry.message}</span>
+                <MetadataChips metadata={entry.metadata} />
+              </span>
+              {hasMetadata || repeats > 1 ? (
+                <span className="log-row-badges">
+                  {hasMetadata ? (
+                    <span
+                      className="log-row-meta-badge"
+                      title="Has structured metadata"
+                      aria-label="has metadata"
+                    >
+                      {'{...}'}
+                    </span>
+                  ) : null}
+                  {repeats > 1 ? (
+                    <span
+                      className="log-row-repeat"
+                      aria-label={`repeated ${repeats} times in a row`}
+                    >
+                      ×{repeats}
+                    </span>
+                  ) : null}
                 </span>
               ) : null}
             </button>
@@ -103,18 +123,71 @@ function sameShape(a: LogEntry, b: LogEntry): boolean {
   return a.service === b.service && a.level === b.level && a.message === b.message;
 }
 
+const PREVIEW_META_KEYS = [
+  'requestId',
+  'traceId',
+  'userId',
+  'status',
+  'err',
+  'duration',
+] as const;
+
+function MetadataChips({ metadata }: { metadata: Record<string, unknown> }) {
+  if (!metadata) return null;
+  const chips: { key: string; value: string }[] = [];
+  for (const key of PREVIEW_META_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
+    const formatted = formatMetaValue(metadata[key]);
+    if (formatted !== null) {
+      chips.push({ key, value: formatted });
+    }
+  }
+  if (chips.length === 0) return null;
+
+  return (
+    <span className="log-row-meta">
+      {chips.map(({ key, value }) => (
+        <span
+          key={key}
+          className={`log-meta-chip${key === 'err' ? ' log-meta-chip-err' : ''}`}
+          title={`${key}: ${value}`}
+        >
+          <span className="log-meta-key">{key}</span>
+          <span className="log-meta-val">{value}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function formatMetaValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    return value.length > 0 ? value : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
 // formatTimestamp displays the entry timestamp in the user's local TZ
-// at second precision. The full RFC3339 string is still available in
-// the LogDetail panel.
+// with millisecond precision (YYYY-MM-DD HH:mm:ss.SSS) so rapid events
+// within the same second are distinguishable. The full RFC3339 string
+// is available in the title tooltip and the LogDetail panel.
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}.${ms}`;
 }

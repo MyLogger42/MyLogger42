@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -84,11 +85,21 @@ func main() {
 	}
 	bootstrapCancel()
 
+	var wg sync.WaitGroup
+
 	hub := ws.NewHub(logger)
-	go hub.Run(rootCtx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hub.Run(rootCtx)
+	}()
 
 	worker := retention.New(stores.Logs, stores.Projects, cfg.RetentionDays, logger)
-	go worker.Run(rootCtx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		worker.Run(rootCtx)
+	}()
 
 	staticFS, err := mylogger42.StaticAssets()
 	if err != nil {
@@ -116,8 +127,19 @@ func main() {
 	// Drains the in-memory last_used_at updates accumulated by ingest
 	// requests and writes them to the DB on a 60s ticker. Stops when
 	// rootCtx is cancelled (and drains once on the way out).
-	api.StartLastUsedFlusher(rootCtx, srv.Throttle())
-	srv.StartLoginLimiterCleanup(rootCtx)
+	flusherDone := api.StartLastUsedFlusher(rootCtx, srv.Throttle())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-flusherDone
+	}()
+
+	cleanupDone := srv.StartLoginLimiterCleanup(rootCtx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-cleanupDone
+	}()
 
 	httpServer := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
@@ -138,11 +160,19 @@ func main() {
 	<-rootCtx.Done()
 	logger.Printf("shutdown signal received")
 
+	gracefulShutdown(httpServer, &wg, logger)
+}
+
+// gracefulShutdown drains in-flight HTTP requests and waits for all
+// background workers tracked by wg to exit before main returns and closes
+// storage in defer.
+func gracefulShutdown(httpServer *http.Server, wg *sync.WaitGroup, logger *log.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("http shutdown: %v", err)
 	}
+	wg.Wait()
 }
 
 // config holds the runtime configuration parsed from environment vars.

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ActiveFilterPills } from '../components/ActiveFilterPills';
 import { FilterBar, type FilterValues } from '../components/FilterBar';
 import { LogList } from '../components/LogList';
-import { useLiveTail } from '../hooks/useLiveTail';
+import { useLiveTail, type ConnectionState } from '../hooks/useLiveTail';
 import { useSources } from '../hooks/useSources';
 
 const initialFilter: FilterValues = {
@@ -21,7 +22,16 @@ export function LiveTailPage() {
   const { slug = '' } = useParams();
   const { sources } = useSources(slug);
   const [filter, setFilter] = useState<FilterValues>(initialFilter);
-  const { entries, state, connect, disconnect, clear, setFilter: pushFilter } = useLiveTail({
+  const {
+    entries,
+    state,
+    closeInfo,
+    reconnectAttempt,
+    connect,
+    disconnect,
+    clear,
+    setFilter: pushFilter,
+  } = useLiveTail({
     projects: slug ? [slug] : [],
   });
   const [autoScroll, setAutoScroll] = useState(true);
@@ -46,14 +56,22 @@ export function LiveTailPage() {
     <section className="page page-live">
       <FilterBar
         sources={sources}
-        initial={initialFilter}
+        initial={filter}
         multiLevel
         onChange={setFilter}
       />
 
       <div className="live-controls">
-        <span className={`live-state live-state-${state}`}>{stateLabel(state)}</span>
-        {state === 'open' ? (
+        <span className={`live-state live-state-${state}`}>
+          {stateLabel(state, reconnectAttempt)}
+        </span>
+        {closeInfo && (
+          <span className="live-close-reason" role="status">
+            Closed ({closeInfo.code}
+            {closeInfo.reason ? `: ${closeInfo.reason}` : ''})
+          </span>
+        )}
+        {state === 'open' || state === 'connecting' || state === 'reconnecting' ? (
           <button type="button" onClick={disconnect}>
             Disconnect
           </button>
@@ -76,25 +94,40 @@ export function LiveTailPage() {
         <span className="live-count">{entries.length} buffered</span>
       </div>
 
+      <ActiveFilterPills filter={filter} onChange={setFilter} />
+
       <LogList
         items={entries}
-        emptyMessage={
-          state === 'open'
-            ? 'Connected — waiting for matching entries...'
-            : 'Click Connect to start streaming.'
-        }
+        emptyMessage={emptyMessageForState(state)}
       />
       <div ref={listEndRef} />
     </section>
   );
 }
 
-function stateLabel(state: string): string {
+function emptyMessageForState(state: ConnectionState): string {
+  switch (state) {
+    case 'open':
+      return 'Connected — waiting for matching entries...';
+    case 'reconnecting':
+      return 'Connection lost — reconnecting...';
+    case 'connecting':
+      return 'Connecting...';
+    default:
+      return 'Click Connect to start streaming.';
+  }
+}
+
+function stateLabel(state: ConnectionState, reconnectAttempt: number): string {
   switch (state) {
     case 'open':
       return 'Connected';
     case 'connecting':
       return 'Connecting...';
+    case 'reconnecting':
+      return reconnectAttempt > 0
+        ? `Reconnecting (attempt ${reconnectAttempt})...`
+        : 'Reconnecting...';
     case 'closed':
       return 'Disconnected';
     case 'error':

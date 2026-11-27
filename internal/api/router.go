@@ -101,9 +101,12 @@ func NewServer(cfg Config) *Server {
 func (s *Server) Throttle() *lastUsedThrottle { return s.usage }
 
 // StartLoginLimiterCleanup purges stale per-IP rate-limit buckets every
-// 30 minutes so the map doesn't grow unbounded. Stops when ctx is cancelled.
-func (s *Server) StartLoginLimiterCleanup(ctx context.Context) {
+// 30 minutes so the map doesn't grow unbounded. Returns a channel that
+// closes when the cleanup goroutine exits after ctx is cancelled.
+func (s *Server) StartLoginLimiterCleanup(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		tick := time.NewTicker(30 * time.Minute)
 		defer tick.Stop()
 		for {
@@ -115,6 +118,7 @@ func (s *Server) StartLoginLimiterCleanup(ctx context.Context) {
 			}
 		}
 	}()
+	return done
 }
 
 // Routes returns the configured http.Handler. Standard library mux is

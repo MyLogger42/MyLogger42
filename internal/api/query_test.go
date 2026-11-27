@@ -366,3 +366,117 @@ func TestExportCapsAtMaxRows(t *testing.T) {
 		t.Errorf("exported %d lines, want %d", len(lines), exportMaxRows)
 	}
 }
+
+type capturingLogStore struct {
+	fakeLogStore
+	lastQueryFilter domain.QueryFilter
+	lastStatsFilter domain.QueryFilter
+}
+
+func (c *capturingLogStore) Query(_ context.Context, _ string, f domain.QueryFilter) ([]domain.LogEntry, int, error) {
+	c.lastQueryFilter = f
+	return []domain.LogEntry{}, 0, nil
+}
+
+func (c *capturingLogStore) Stats(_ context.Context, _ string, f domain.QueryFilter, _ int) (*domain.LogStats, error) {
+	c.lastStatsFilter = f
+	return &domain.LogStats{
+		Series:      []domain.LevelBucket{},
+		Totals:      map[domain.LogLevel]int64{},
+		TopMessages: []domain.MessageGroup{},
+	}, nil
+}
+
+func TestQueryAndStatsMultiLevelFilters(t *testing.T) {
+	store := &capturingLogStore{}
+	s := &Server{
+		store: store,
+		projects: &fakeProjectStoreWithSlugs{
+			byID:   map[string]*domain.Project{"p1": {ID: "p1", Slug: "auth-svc"}},
+			bySlug: map[string]*domain.Project{"auth-svc": {ID: "p1", Slug: "auth-svc"}},
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantLevels []domain.LogLevel
+	}{
+		{
+			name:       "LegacySingleLevel",
+			query:      "?project=auth-svc&level=Error",
+			wantStatus: http.StatusOK,
+			wantLevels: []domain.LogLevel{domain.LevelError},
+		},
+		{
+			name:       "CommaSeparatedLevels",
+			query:      "?project=auth-svc&levels=warning,Error,FATAL",
+			wantStatus: http.StatusOK,
+			wantLevels: []domain.LogLevel{domain.LevelWarning, domain.LevelError, domain.LevelFatal},
+		},
+		{
+			name:       "RepeatedLevelsParam",
+			query:      "?project=auth-svc&levels=Info&levels=Warning,Error",
+			wantStatus: http.StatusOK,
+			wantLevels: []domain.LogLevel{domain.LevelInfo, domain.LevelWarning, domain.LevelError},
+		},
+		{
+			name:       "EmptyLevelsParamIgnored",
+			query:      "?project=auth-svc&levels=",
+			wantStatus: http.StatusOK,
+			wantLevels: nil,
+		},
+		{
+			name:       "MinLevel",
+			query:      "?project=auth-svc&minLevel=warning",
+			wantStatus: http.StatusOK,
+			wantLevels: []domain.LogLevel{domain.LevelWarning, domain.LevelError, domain.LevelFatal},
+		},
+		{
+			name:       "InvalidLevels",
+			query:      "?project=auth-svc&levels=Warning,Trace",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "InvalidMinLevel",
+			query:      "?project=auth-svc&minLevel=Trace",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store.lastQueryFilter = domain.QueryFilter{}
+			rr := httptest.NewRecorder()
+			s.handleQuery(rr, httptest.NewRequest(http.MethodGet, "/api/v1/logs"+tc.query, nil))
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("GET /logs status = %d, want %d; body=%s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+
+			store.lastStatsFilter = domain.QueryFilter{}
+			rrStats := httptest.NewRecorder()
+			s.handleStats(rrStats, httptest.NewRequest(http.MethodGet, "/api/v1/stats"+tc.query, nil))
+			if rrStats.Code != tc.wantStatus {
+				t.Fatalf("GET /stats status = %d, want %d; body=%s", rrStats.Code, tc.wantStatus, rrStats.Body.String())
+			}
+
+			if tc.wantStatus == http.StatusOK {
+				for _, got := range [][]domain.LogLevel{
+					store.lastQueryFilter.EffectiveLevels(),
+					store.lastStatsFilter.EffectiveLevels(),
+				} {
+					if len(got) != len(tc.wantLevels) {
+						t.Fatalf("EffectiveLevels() = %v, want %v", got, tc.wantLevels)
+					}
+					for i := range got {
+						if got[i] != tc.wantLevels[i] {
+							t.Fatalf("EffectiveLevels()[%d] = %q, want %q", i, got[i], tc.wantLevels[i])
+						}
+					}
+				}
+			}
+		})
+	}
+}

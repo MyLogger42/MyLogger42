@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ActiveFilterPills } from '../components/ActiveFilterPills';
 import {
   FilterBar,
   localToRfc3339,
@@ -189,6 +190,8 @@ export function LogsPage() {
           </div>
         </div>
       </div>
+
+      <ActiveFilterPills filter={filter} onChange={setFilter} />
 
       <LogList items={items} />
 
