@@ -9,7 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -37,9 +37,9 @@ Levels, lowest to highest: Verbose, Debug, Info, Event, Warning, Error, Fatal. T
 
 // NewServer builds the MCP server with all tools registered. Exposed for
 // tests, which connect to it over in-memory transports.
-func NewServer(logs store.LogStore, projects store.ProjectStore, logger *log.Logger) *mcp.Server {
+func NewServer(logs store.LogStore, projects store.ProjectStore, logger *slog.Logger) *mcp.Server {
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
 	t := tools{logs: logs, projects: projects, logger: logger}
 	s := mcp.NewServer(&mcp.Implementation{Name: "mylogger42", Version: "1"},
@@ -69,7 +69,7 @@ func NewServer(logs store.LogStore, projects store.ProjectStore, logger *log.Log
 //     deployment behind a same-host reverse proxy (Host: logs.example.com
 //     arriving from 127.0.0.1). The bearer token in front of this handler
 //     is what actually protects it.
-func NewHandler(logs store.LogStore, projects store.ProjectStore, logger *log.Logger) http.Handler {
+func NewHandler(logs store.LogStore, projects store.ProjectStore, logger *slog.Logger) http.Handler {
 	s := NewServer(logs, projects, logger)
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s },
 		&mcp.StreamableHTTPOptions{
@@ -82,7 +82,7 @@ func NewHandler(logs store.LogStore, projects store.ProjectStore, logger *log.Lo
 type tools struct {
 	logs     store.LogStore
 	projects store.ProjectStore
-	logger   *log.Logger
+	logger   *slog.Logger
 }
 
 // --- inputs -------------------------------------------------------------
@@ -292,6 +292,6 @@ func buildFilter(in filterIn) (domain.QueryFilter, error) {
 // storageErr logs the real cause and hands the agent a generic error, same
 // posture as the HTTP API's "storage error" 500s.
 func (t tools) storageErr(err error) error {
-	t.logger.Printf("mcp: storage: %v", err)
+	t.logger.Error("mcp: storage", "err", err)
 	return errors.New("storage error")
 }
