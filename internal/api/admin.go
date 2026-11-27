@@ -495,7 +495,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	issued, err := auth.GenerateReadToken()
 	if err != nil {
-		s.logger.Printf("admin: issue token: %v", err)
+		s.logger.Error("admin: issue token", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "issue token")
 		return
 	}
@@ -506,7 +506,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.tokens.Create(r.Context(), rec, auth.ComputeHMAC(s.pepper, issued.Secret)); err != nil {
-		s.logger.Printf("admin: issue token: %v", err)
+		s.logger.Error("admin: issue token", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "issue token")
 		return
 	}
@@ -519,7 +519,7 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	toks, err := s.tokens.List(r.Context(), true)
 	if err != nil {
-		s.logger.Printf("admin: list tokens: %v", err)
+		s.logger.Error("admin: list tokens", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -539,7 +539,7 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.logger.Printf("admin: revoke token: %v", err)
+		s.logger.Error("admin: revoke token", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}

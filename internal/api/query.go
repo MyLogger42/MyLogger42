@@ -296,7 +296,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 		items, t, err := s.store.Query(r.Context(), project.ID, pageFilter)
 		if err != nil {
-			s.logger.Printf("export query: %v", err)
+			s.logger.Error("export query", "err", err, "request_id", RequestIDFromContext(r.Context()))
 			writeError(w, http.StatusInternalServerError, "storage error")
 			return
 		}
@@ -318,7 +318,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		cw := csv.NewWriter(w)
 		if err := cw.Write([]string{"id", "timestamp", "receivedAt", "level", "service", "message", "metadata"}); err != nil {
-			s.logger.Printf("export csv header: %v", err)
+			s.logger.Error("export csv header", "err", err, "request_id", RequestIDFromContext(r.Context()))
 			return
 		}
 		for _, e := range entries {
@@ -338,13 +338,13 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 				metaJSON,
 			}
 			if err := cw.Write(row); err != nil {
-				s.logger.Printf("export csv row: %v", err)
+				s.logger.Error("export csv row", "err", err, "request_id", RequestIDFromContext(r.Context()))
 				return
 			}
 		}
 		cw.Flush()
 		if err := cw.Error(); err != nil {
-			s.logger.Printf("export csv flush: %v", err)
+			s.logger.Error("export csv flush", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		}
 		return
 	}
@@ -353,7 +353,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	for _, e := range entries {
 		if err := enc.Encode(e); err != nil {
-			s.logger.Printf("export ndjson row: %v", err)
+			s.logger.Error("export ndjson row", "err", err, "request_id", RequestIDFromContext(r.Context()))
 			return
 		}
 	}

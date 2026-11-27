@@ -275,7 +275,7 @@ func TestExportNDJSONAndCSV(t *testing.T) {
 	s := &Server{
 		store:    st,
 		projects: &fakeProjectStoreWithSlugs{bySlug: map[string]*domain.Project{"auth-svc": {ID: "p1", Slug: "auth-svc"}}},
-		logger:   log.New(io.Discard, "", 0),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	// NDJSON
@@ -350,7 +350,7 @@ func TestExportCapsAtMaxRows(t *testing.T) {
 	s := &Server{
 		store:    st,
 		projects: &fakeProjectStoreWithSlugs{bySlug: map[string]*domain.Project{"auth-svc": {ID: "p1", Slug: "auth-svc"}}},
-		logger:   log.New(io.Discard, "", 0),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	rr := httptest.NewRecorder()
