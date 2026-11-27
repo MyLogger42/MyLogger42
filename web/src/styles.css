@@ -285,8 +285,48 @@ input:-webkit-autofill:focus {
 .logs-meta {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   color: var(--fg-muted);
   font-size: 12px;
+}
+
+.logs-meta-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-dropdown {
+  position: relative;
+}
+
+.export-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.export-menu button {
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.export-menu button:hover {
+  background: rgba(56, 189, 248, 0.12);
 }
 
 .active-filters {

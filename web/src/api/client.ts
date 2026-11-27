@@ -128,6 +128,46 @@ export async function fetchLogs(query: LogsQuery): Promise<QueryResponse> {
   return jsonRequest<QueryResponse>(`/api/v1/logs?${queryParams(query)}`);
 }
 
+export type ExportFormat = 'ndjson' | 'csv';
+
+export async function exportLogs(
+  query: Omit<LogsQuery, 'limit' | 'offset'>,
+  format: ExportFormat,
+): Promise<{ truncated: boolean }> {
+  const params = new URLSearchParams(queryParams(query as LogsQuery));
+  params.set('format', format);
+  const res = await fetch(url(`/api/v1/logs/export?${params.toString()}`), {
+    credentials: 'include',
+  });
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED));
+    throw new AuthExpiredError();
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body === 'object' && 'error' in body) {
+        msg = String((body as { error: unknown }).error);
+      }
+    } catch {
+      // ignore
+    }
+    throw new HttpError(res.status, msg);
+  }
+  const truncated = res.headers.get('X-Export-Truncated') === 'true';
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = `${query.project || 'logs'}-logs.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+  return { truncated };
+}
+
 // fetchStats is the aggregate sibling of fetchLogs: same filter params,
 // counts instead of rows. Backs the histogram / totals / top-messages
 // panels in one round trip.
