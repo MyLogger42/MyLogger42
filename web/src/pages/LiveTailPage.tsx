@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ActiveFilterPills } from '../components/ActiveFilterPills';
 import { FilterBar, type FilterValues } from '../components/FilterBar';
 import { LogList } from '../components/LogList';
 import { useLiveTail } from '../hooks/useLiveTail';
@@ -46,7 +47,7 @@ export function LiveTailPage() {
     <section className="page page-live">
       <FilterBar
         sources={sources}
-        initial={initialFilter}
+        initial={filter}
         multiLevel
         onChange={setFilter}
       />
@@ -75,6 +76,8 @@ export function LiveTailPage() {
         </label>
         <span className="live-count">{entries.length} buffered</span>
       </div>
+
+      <ActiveFilterPills filter={filter} onChange={setFilter} />
 
       <LogList
         items={entries}

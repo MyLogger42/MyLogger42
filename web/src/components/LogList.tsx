@@ -42,6 +42,8 @@ export function LogList({
         const isOpen = expandedId === entry.id;
         const accent = LEVEL_COLORS[entry.level]?.bg ?? '#6b7280';
         const repeats = group.length;
+        const hasMetadata =
+          entry.metadata != null && Object.keys(entry.metadata).length > 0;
         return (
           <li key={entry.id} className={`log-row ${isOpen ? 'log-row-open' : ''}`}>
             <button
@@ -55,12 +57,25 @@ export function LogList({
               <LevelBadge level={entry.level} />
               <span className="log-row-service">{entry.service}</span>
               <span className="log-row-message">{entry.message}</span>
-              {repeats > 1 ? (
-                <span
-                  className="log-row-repeat"
-                  aria-label={`repeated ${repeats} times in a row`}
-                >
-                  ×{repeats}
+              {hasMetadata || repeats > 1 ? (
+                <span className="log-row-badges">
+                  {hasMetadata ? (
+                    <span
+                      className="log-row-meta-badge"
+                      title="Has structured metadata"
+                      aria-label="has metadata"
+                    >
+                      {'{...}'}
+                    </span>
+                  ) : null}
+                  {repeats > 1 ? (
+                    <span
+                      className="log-row-repeat"
+                      aria-label={`repeated ${repeats} times in a row`}
+                    >
+                      ×{repeats}
+                    </span>
+                  ) : null}
                 </span>
               ) : null}
             </button>
