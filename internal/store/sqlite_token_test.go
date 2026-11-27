@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -48,5 +49,21 @@ func TestSQLiteTokenLifecycle(t *testing.T) {
 	all, _ := s.Tokens.List(ctx, true)
 	if len(active) != 0 || len(all) != 1 || all[0].RevokedAt == nil {
 		t.Fatalf("List active=%d all=%+v", len(active), all)
+	}
+}
+
+func TestOpenStoresVictoriaLogsHasTokens(t *testing.T) {
+	ctx := context.Background()
+	stores, err := OpenStores(ctx, OpenConfig{
+		Driver: DriverVictoriaLogs,
+		DSN:    filepath.Join(t.TempDir(), "meta.db"),
+	})
+	if err != nil {
+		t.Fatalf("OpenStores(DriverVictoriaLogs): %v", err)
+	}
+	t.Cleanup(func() { _ = stores.Logs.Close() })
+
+	if stores.Tokens == nil {
+		t.Fatal("stores.Tokens is nil under DriverVictoriaLogs")
 	}
 }

@@ -174,6 +174,7 @@ func OpenStores(ctx context.Context, cfg OpenConfig) (*Stores, error) {
 			Projects: meta.Projects,
 			Keys:     meta.Keys,
 			Users:    meta.Users,
+			Tokens:   meta.Tokens,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown db driver %q", cfg.Driver)
