@@ -340,9 +340,21 @@ func buildWhereSQLite(projectID string, f domain.QueryFilter) (string, []any) {
 		clauses = append(clauses, "service = ?")
 		args = append(args, f.Service)
 	}
-	if f.Level != "" {
-		clauses = append(clauses, "level = ?")
-		args = append(args, string(f.Level))
+	if levels := f.EffectiveLevels(); levels != nil {
+		switch len(levels) {
+		case 0:
+			clauses = append(clauses, "1 = 0")
+		case 1:
+			clauses = append(clauses, "level = ?")
+			args = append(args, string(levels[0]))
+		default:
+			placeholders := make([]string, len(levels))
+			for i, l := range levels {
+				placeholders[i] = "?"
+				args = append(args, string(l))
+			}
+			clauses = append(clauses, "level IN ("+strings.Join(placeholders, ", ")+")")
+		}
 	}
 	if f.From != nil {
 		clauses = append(clauses, "timestamp >= ?")

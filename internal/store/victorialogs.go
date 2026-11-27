@@ -505,8 +505,19 @@ func buildLogsQL(projectID string, f domain.QueryFilter) string {
 	if f.Service != "" {
 		clauses = append(clauses, fieldService+":="+quoteLogsQL(f.Service))
 	}
-	if f.Level != "" {
-		clauses = append(clauses, fieldLevel+":="+quoteLogsQL(string(f.Level)))
+	if levels := f.EffectiveLevels(); levels != nil {
+		switch len(levels) {
+		case 0:
+			clauses = append(clauses, fieldLevel+`:=""`)
+		case 1:
+			clauses = append(clauses, fieldLevel+":="+quoteLogsQL(string(levels[0])))
+		default:
+			parts := make([]string, len(levels))
+			for i, l := range levels {
+				parts[i] = fieldLevel + ":=" + quoteLogsQL(string(l))
+			}
+			clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
+		}
 	}
 	if f.Search != "" {
 		// Case-insensitive phrase match. This is the documented

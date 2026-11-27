@@ -13,18 +13,21 @@ const (
 	SortDesc SortOrder = "desc"
 )
 
-// QueryFilter captures the parameters supported by GET /api/v1/logs. All
-// fields are optional; zero values mean "no constraint". Limit/Offset have
-// defaults applied at the API layer (limit=50, offset=0, sort=desc).
+// QueryFilter captures the parameters supported by GET /api/v1/logs and
+// GET /api/v1/stats. All fields are optional; zero values mean "no
+// constraint". Limit/Offset have defaults applied at the API layer
+// (limit=50, offset=0, sort=desc).
 type QueryFilter struct {
-	Service string
-	Level   LogLevel
-	From    *time.Time
-	To      *time.Time
-	Search  string
-	Limit   int
-	Offset  int
-	Sort    SortOrder
+	Service  string
+	Level    LogLevel
+	Levels   []LogLevel
+	MinLevel LogLevel
+	From     *time.Time
+	To       *time.Time
+	Search   string
+	Limit    int
+	Offset   int
+	Sort     SortOrder
 }
 
 // Validate enforces invariants that are cheap to check before hitting the
@@ -45,10 +48,62 @@ func (f QueryFilter) Validate() error {
 	if f.Level != "" && !f.Level.Valid() {
 		return errors.New("unknown log level")
 	}
+	for _, l := range f.Levels {
+		if !l.Valid() {
+			return errors.New("unknown log level")
+		}
+	}
+	if f.MinLevel != "" && !f.MinLevel.Valid() {
+		return errors.New("unknown log level")
+	}
 	if f.From != nil && f.To != nil && f.To.Before(*f.From) {
 		return errors.New("to must be >= from")
 	}
 	return nil
+}
+
+// EffectiveLevels resolves Level, Levels, and MinLevel into a single
+// deduplicated slice of matching levels. Returns nil when no level
+// constraint is set; returns a non-nil empty slice when combined
+// constraints exclude all levels.
+func (f QueryFilter) EffectiveLevels() []LogLevel {
+	hasExplicit := f.Level != "" || len(f.Levels) > 0
+	if !hasExplicit && f.MinLevel == "" {
+		return nil
+	}
+
+	if !hasExplicit {
+		minOrd := f.MinLevel.Ordinal()
+		var out []LogLevel
+		for _, l := range allLevels {
+			if l.Ordinal() >= minOrd {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+
+	seen := make(map[LogLevel]bool, len(f.Levels)+1)
+	out := make([]LogLevel, 0, len(f.Levels)+1)
+	minOrd := -1
+	if f.MinLevel != "" {
+		minOrd = f.MinLevel.Ordinal()
+	}
+	add := func(l LogLevel) {
+		if l == "" || seen[l] {
+			return
+		}
+		if minOrd >= 0 && l.Ordinal() < minOrd {
+			return
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	add(f.Level)
+	for _, l := range f.Levels {
+		add(l)
+	}
+	return out
 }
 
 // LiveTailFilter is the per-WS-client subscription filter. The Projects
