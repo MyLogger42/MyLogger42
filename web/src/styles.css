@@ -441,8 +441,14 @@ input:-webkit-autofill:focus {
   color: var(--fg-muted);
 }
 
-.live-state-connecting {
+.live-state-connecting,
+.live-state-reconnecting {
   color: var(--accent);
+}
+
+.live-close-reason {
+  color: var(--danger);
+  font-size: 0.875rem;
 }
 
 .live-autoscroll {

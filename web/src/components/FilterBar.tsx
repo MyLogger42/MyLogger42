@@ -53,32 +53,36 @@ export function FilterBar({
   busy,
 }: Props) {
   const [v, setV] = useState<FilterValues>(initial);
-  const lastEmittedRef = useRef<string>(JSON.stringify(initial));
+  // Track the last filter snapshot synced from `initial` or emitted via
+  // `onChange` so neither initial mount nor parent-driven resets re-emit.
+  const lastSyncedRef = useRef<string>(JSON.stringify(initial));
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   // Sync local state when the parent swaps `initial` (URL navigation,
   // histogram click, chip toggle, etc.) without re-emitting onChange.
   useEffect(() => {
-    const serialized = JSON.stringify(initial);
-    lastEmittedRef.current = serialized;
+    lastSyncedRef.current = JSON.stringify(initial);
     setV(initial);
   }, [initial]);
 
+  const vKey = JSON.stringify(v);
+
   // Debounce text/search changes so we don't fire a request per keystroke.
-  const serializedV = JSON.stringify(v);
   useEffect(() => {
-    if (serializedV === lastEmittedRef.current) return;
+    if (vKey === lastSyncedRef.current) return;
     const id = window.setTimeout(() => {
-      lastEmittedRef.current = serializedV;
-      onChange(v);
+      lastSyncedRef.current = vKey;
+      onChangeRef.current(v);
     }, 250);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serializedV]);
+  }, [vKey]);
 
   function applyImmediate(next: FilterValues) {
-    lastEmittedRef.current = JSON.stringify(next);
+    lastSyncedRef.current = JSON.stringify(next);
     setV(next);
-    onChange(next);
+    onChangeRef.current(next);
   }
 
   function applyPreset(ms: number) {
