@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -168,6 +169,24 @@ func (p IngestPayload) ToEntry(id, projectID string, receivedAt time.Time) (LogE
 	}, nil
 }
 
+// decodeStrictJSON decodes a single JSON value into dst with DisallowUnknownFields
+// and rejects any trailing non-whitespace tokens after that value.
+func decodeStrictJSON(raw []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
+		return errors.New("unexpected trailing JSON data")
+	}
+	return nil
+}
+
 // DecodeIngestPayloadStrict parses one IngestPayload from raw JSON and
 // rejects payloads containing unknown fields — most importantly a
 // top-level "project" field, which would otherwise let clients claim
@@ -179,9 +198,7 @@ func (p IngestPayload) ToEntry(id, projectID string, receivedAt time.Time) (LogE
 // the "no project field" rule is enforced.
 func DecodeIngestPayloadStrict(raw []byte) (IngestPayload, error) {
 	var p IngestPayload
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
+	if err := decodeStrictJSON(raw, &p); err != nil {
 		return IngestPayload{}, err
 	}
 	return p, nil
@@ -198,9 +215,7 @@ func DecodeIngestBatchStrict(raw []byte) ([]IngestPayload, error) {
 	// rather than an unknown-fields error). DisallowUnknownFields here
 	// applies to the slice element struct because Go's json package
 	// propagates the flag into the slice elements.
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&ps); err != nil {
+	if err := decodeStrictJSON(raw, &ps); err != nil {
 		return nil, err
 	}
 	return ps, nil

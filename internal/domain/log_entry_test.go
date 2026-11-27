@@ -136,6 +136,33 @@ func TestDecodeIngestPayloadStrictRejectsProjectField(t *testing.T) {
 	}
 }
 
+func TestDecodeIngestStrictRejectsTrailingTokens(t *testing.T) {
+	trailingPayloads := [][]byte{
+		[]byte(`{"service":"s","level":"Info","message":"m"}{"service":"other"}`),
+		[]byte(`{"service":"s","level":"Info","message":"m"} 123`),
+		[]byte(`{"service":"s","level":"Info","message":"m"} trailing`),
+	}
+	for _, raw := range trailingPayloads {
+		if _, err := DecodeIngestPayloadStrict(raw); err == nil {
+			t.Fatalf("expected error for trailing tokens in %q", raw)
+		}
+	}
+
+	if _, err := DecodeIngestPayloadStrict([]byte("{\"service\":\"s\",\"level\":\"Info\",\"message\":\"m\"}\n  ")); err != nil {
+		t.Fatalf("trailing whitespace should be accepted, got %v", err)
+	}
+
+	trailingBatches := [][]byte{
+		[]byte(`[{"service":"s","level":"Info","message":"m"}] {"extra":1}`),
+		[]byte(`[{"service":"s","level":"Info","message":"m"}] garbage`),
+	}
+	for _, raw := range trailingBatches {
+		if _, err := DecodeIngestBatchStrict(raw); err == nil {
+			t.Fatalf("expected error for trailing tokens in batch %q", raw)
+		}
+	}
+}
+
 func TestLiveTailFilterMatches(t *testing.T) {
 	entry := LogEntry{ProjectID: "p1", Service: "auth", Level: LevelError}
 
