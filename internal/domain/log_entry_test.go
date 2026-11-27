@@ -205,6 +205,9 @@ func TestQueryFilterValidate(t *testing.T) {
 		{Offset: -1},
 		{Sort: "sideways"},
 		{Level: "Trace"},
+		{Levels: []LogLevel{"Trace"}},
+		{Levels: []LogLevel{LevelInfo, ""}},
+		{MinLevel: "Trace"},
 	}
 	for i, f := range bad {
 		if err := f.Validate(); err == nil {
@@ -215,5 +218,65 @@ func TestQueryFilterValidate(t *testing.T) {
 	to := from.Add(-time.Hour)
 	if err := (QueryFilter{From: &from, To: &to}).Validate(); err == nil {
 		t.Fatal("expected error when to < from")
+	}
+}
+
+func TestQueryFilterEffectiveLevels(t *testing.T) {
+	if got := (QueryFilter{}).EffectiveLevels(); got != nil {
+		t.Fatalf("empty filter: got %v, want nil", got)
+	}
+
+	cases := []struct {
+		name   string
+		filter QueryFilter
+		want   []LogLevel
+	}{
+		{
+			name:   "SingleLevel",
+			filter: QueryFilter{Level: LevelError},
+			want:   []LogLevel{LevelError},
+		},
+		{
+			name:   "MultipleLevelsDeduplicated",
+			filter: QueryFilter{Levels: []LogLevel{LevelWarning, LevelError, LevelWarning, LevelFatal}},
+			want:   []LogLevel{LevelWarning, LevelError, LevelFatal},
+		},
+		{
+			name:   "MinLevel",
+			filter: QueryFilter{MinLevel: LevelWarning},
+			want:   []LogLevel{LevelWarning, LevelError, LevelFatal},
+		},
+		{
+			name:   "LevelAndLevelsUnion",
+			filter: QueryFilter{Level: LevelInfo, Levels: []LogLevel{LevelError, LevelInfo}},
+			want:   []LogLevel{LevelInfo, LevelError},
+		},
+		{
+			name:   "LevelsFilteredByMinLevel",
+			filter: QueryFilter{Levels: []LogLevel{LevelInfo, LevelWarning, LevelError}, MinLevel: LevelWarning},
+			want:   []LogLevel{LevelWarning, LevelError},
+		},
+		{
+			name:   "ConflictingLevelAndMinLevel",
+			filter: QueryFilter{Level: LevelInfo, MinLevel: LevelWarning},
+			want:   []LogLevel{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.filter.EffectiveLevels()
+			if got == nil {
+				t.Fatalf("got nil, want non-nil %v", tc.want)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
