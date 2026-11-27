@@ -245,7 +245,7 @@ input:-webkit-autofill:focus {
 .log-row-summary {
   width: 100%;
   display: grid;
-  grid-template-columns: 170px 80px 160px 1fr auto;
+  grid-template-columns: 185px 80px 150px 1fr auto;
   gap: 12px;
   align-items: center;
   text-align: left;
@@ -268,8 +268,10 @@ input:-webkit-autofill:focus {
 
 .log-row-time {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .log-row-service {
@@ -279,11 +281,59 @@ input:-webkit-autofill:focus {
   text-overflow: ellipsis;
 }
 
+.log-row-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .log-row-message {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.log-row-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.log-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: 180px;
+}
+
+.log-meta-chip-err {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.log-meta-key {
+  color: var(--fg-muted);
+}
+
+.log-meta-val {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .level-badge {
@@ -343,6 +393,16 @@ input:-webkit-autofill:focus {
 
 .log-detail-message {
   white-space: pre-wrap;
+}
+
+.log-detail-rel {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.log-detail-lag {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .log-detail-json {
@@ -1054,6 +1114,17 @@ input:-webkit-autofill:focus {
 }
 
 @media (max-width: 720px) {
+  .log-row-summary {
+    grid-template-columns: auto 1fr;
+    gap: 6px 8px;
+  }
+  .log-row-content {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+  .log-row-meta {
+    justify-content: flex-start;
+  }
   .noise-row {
     grid-template-columns: 64px 1fr;
     row-gap: 4px;
