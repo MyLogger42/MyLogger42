@@ -547,3 +547,55 @@ func TestAuthCacheBoundsEntries(t *testing.T) {
 		t.Fatalf("cache holds %d entries, want <= %d", n, authCacheMaxEntries)
 	}
 }
+
+func TestStartLastUsedFlusherSignalsDoneAfterFinalFlush(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	slowKeys := &blockingKeyStore{
+		KeyStore: &fakeKeyStore{},
+		onNoteUsage: func() {
+			close(entered)
+			<-release
+		},
+	}
+
+	throttle := newLastUsedThrottle(slowKeys)
+	throttle.note("key-1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartLastUsedFlusher(ctx, throttle)
+
+	cancel()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final flush to start")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("done channel closed before final flush finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for done channel to close after final flush")
+	}
+}
+
+type blockingKeyStore struct {
+	store.KeyStore
+	onNoteUsage func()
+}
+
+func (b *blockingKeyStore) NoteUsage(ctx context.Context, id string, when time.Time) error {
+	if b.onNoteUsage != nil {
+		b.onNoteUsage()
+	}
+	return b.KeyStore.NoteUsage(ctx, id, when)
+}

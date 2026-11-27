@@ -170,3 +170,55 @@ func TestMeReturnsClaimsFromContext(t *testing.T) {
 		t.Fatalf("body missing username: %s", rr.Body.String())
 	}
 }
+
+func TestLoginRejectsTrailingTokens(t *testing.T) {
+	s, _ := authTestServer(t, "hunter2")
+	cases := []string{
+		`{"username":"admin","password":"hunter2"}{"username":"other","password":"x"}`,
+		`{"username":"admin","password":"hunter2"} 123`,
+		`{"username":"admin","password":"hunter2"} garbage`,
+	}
+	for _, raw := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(raw))
+		rr := httptest.NewRecorder()
+		s.handleLogin(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("payload %q: status = %d, want 400", raw, rr.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader("{\"username\":\"admin\",\"password\":\"hunter2\"}\n  "))
+	rr := httptest.NewRecorder()
+	s.handleLogin(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("trailing whitespace should succeed, got %d", rr.Code)
+	}
+}
+
+func TestStrictDecodeRejectsTrailingTokens(t *testing.T) {
+	type sample struct {
+		Name string `json:"name"`
+	}
+	for _, raw := range []string{
+		`{"name":"ok"}{"name":"smuggled"}`,
+		`{"name":"ok"} null`,
+		`{"name":"ok"} trailing`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(raw))
+		rr := httptest.NewRecorder()
+		var dst sample
+		if strictDecode(rr, req, &dst) {
+			t.Fatalf("strictDecode(%q) unexpectedly succeeded", raw)
+		}
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("strictDecode(%q) status = %d, want 400", raw, rr.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{\"name\":\"ok\"}\n "))
+	rr := httptest.NewRecorder()
+	var dst sample
+	if !strictDecode(rr, req, &dst) || dst.Name != "ok" {
+		t.Fatalf("strictDecode with trailing whitespace failed: status=%d dst=%+v", rr.Code, dst)
+	}
+}

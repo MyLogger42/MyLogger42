@@ -334,11 +334,14 @@ func (t *lastUsedThrottle) flush(ctx context.Context) {
 }
 
 // StartLastUsedFlusher launches a goroutine that drains the throttle
-// map every throttleEvery. Stops when ctx is cancelled.
+// map every throttleEvery and returns a channel that closes once the
+// final shutdown flush has completed. Stops when ctx is cancelled.
 //
 // Exposed so main.go can wire it up next to hub.Run / worker.Run.
-func StartLastUsedFlusher(ctx context.Context, t *lastUsedThrottle) {
+func StartLastUsedFlusher(ctx context.Context, t *lastUsedThrottle) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		tick := time.NewTicker(throttleEvery)
 		defer tick.Stop()
 		for {
@@ -353,6 +356,7 @@ func StartLastUsedFlusher(ctx context.Context, t *lastUsedThrottle) {
 			}
 		}
 	}()
+	return done
 }
 
 // --- session auth (cookie → claims) -----------------------------------

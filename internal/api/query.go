@@ -48,8 +48,8 @@ func (s *Server) resolveProjectFromQuery(w http.ResponseWriter, r *http.Request)
 // handleQuery implements GET /api/v1/logs.
 //
 // Required query params: project=<slug>. All other QueryFilter params
-// (service, level, from, to, search, limit, offset, sort) are optional
-// and parsed by parseQueryFilter.
+// (service, level, levels, minLevel, from, to, search, limit, offset,
+// sort) are optional and parsed by parseQueryFilter.
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	project, ok := s.resolveProjectFromQuery(w, r)
 	if !ok {
@@ -172,12 +172,32 @@ func parseQueryFilter(r *http.Request) (domain.QueryFilter, error) {
 		Search:  strings.TrimSpace(q.Get("search")),
 		Sort:    domain.SortDesc, // default per spec
 	}
-	if levelStr := q.Get("level"); levelStr != "" {
+	if levelStr := strings.TrimSpace(q.Get("level")); levelStr != "" {
 		lvl, err := domain.ParseLogLevel(levelStr)
 		if err != nil {
 			return f, err
 		}
 		f.Level = lvl
+	}
+	for _, raw := range q["levels"] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			lvl, err := domain.ParseLogLevel(part)
+			if err != nil {
+				return f, err
+			}
+			f.Levels = append(f.Levels, lvl)
+		}
+	}
+	if minStr := strings.TrimSpace(q.Get("minLevel")); minStr != "" {
+		lvl, err := domain.ParseLogLevel(minStr)
+		if err != nil {
+			return f, err
+		}
+		f.MinLevel = lvl
 	}
 	if fromStr := q.Get("from"); fromStr != "" {
 		t, err := time.Parse(time.RFC3339, fromStr)

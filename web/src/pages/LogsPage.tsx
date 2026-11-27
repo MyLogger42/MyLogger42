@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ActiveFilterPills } from '../components/ActiveFilterPills';
 import {
   FilterBar,
   localToRfc3339,
@@ -111,6 +112,8 @@ export function LogsPage() {
           Page {currentPage} of {totalPages}
         </span>
       </div>
+
+      <ActiveFilterPills filter={filter} onChange={setFilter} />
 
       <LogList items={items} />
 

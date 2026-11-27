@@ -329,6 +329,8 @@ func (s *sqliteStore) Query(ctx context.Context, projectID string, f domain.Quer
 	return out, total, nil
 }
 
+var likeReplacer = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 // buildWhereSQLite constructs the WHERE clause and ordered args. The
 // project_id predicate is always present (it's the v2 scoping anchor)
 // and leads the clause list so the composite (project_id, timestamp DESC)
@@ -340,9 +342,21 @@ func buildWhereSQLite(projectID string, f domain.QueryFilter) (string, []any) {
 		clauses = append(clauses, "service = ?")
 		args = append(args, f.Service)
 	}
-	if f.Level != "" {
-		clauses = append(clauses, "level = ?")
-		args = append(args, string(f.Level))
+	if levels := f.EffectiveLevels(); levels != nil {
+		switch len(levels) {
+		case 0:
+			clauses = append(clauses, "1 = 0")
+		case 1:
+			clauses = append(clauses, "level = ?")
+			args = append(args, string(levels[0]))
+		default:
+			placeholders := make([]string, len(levels))
+			for i, l := range levels {
+				placeholders[i] = "?"
+				args = append(args, string(l))
+			}
+			clauses = append(clauses, "level IN ("+strings.Join(placeholders, ", ")+")")
+		}
 	}
 	if f.From != nil {
 		clauses = append(clauses, "timestamp >= ?")
@@ -353,8 +367,8 @@ func buildWhereSQLite(projectID string, f domain.QueryFilter) (string, []any) {
 		args = append(args, f.To.UTC())
 	}
 	if f.Search != "" {
-		clauses = append(clauses, "message LIKE ?")
-		args = append(args, "%"+f.Search+"%")
+		clauses = append(clauses, `message LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+likeReplacer.Replace(f.Search)+"%")
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }

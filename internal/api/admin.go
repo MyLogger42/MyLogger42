@@ -106,7 +106,13 @@ func (s *Server) resolveProjectFromPath(w http.ResponseWriter, r *http.Request) 
 // always tiny), and decodes with DisallowUnknownFields so a typo in the
 // JSON keys produces a clear 400 instead of being silently dropped.
 func strictDecode(w http.ResponseWriter, r *http.Request, dst any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	return strictDecodeLimited(w, r, 64<<10, dst)
+}
+
+// strictDecodeLimited reads up to maxBytes from the request body, decodes
+// a single JSON value with DisallowUnknownFields, and rejects trailing tokens.
+func strictDecodeLimited(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
 		return false
@@ -115,6 +121,15 @@ func strictDecode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid payload: "+err.Error())
+		return false
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid payload: "+err.Error())
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid payload: unexpected trailing JSON data")
+		}
 		return false
 	}
 	return true
