@@ -95,7 +95,7 @@ func (s *Server) resolveProjectFromPath(w http.ResponseWriter, r *http.Request) 
 		return nil, false
 	}
 	if err != nil {
-		s.logger.Printf("admin: project lookup: %v", err)
+		s.logger.Error("admin: project lookup", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return nil, false
 	}
@@ -219,7 +219,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "slug already in use")
 			return
 		}
-		s.logger.Printf("admin: create project: %v", err)
+		s.logger.Error("admin: create project", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -229,7 +229,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		// Project exists but key issuance failed. Log + return 500 so
 		// the admin sees the inconsistency. They can retry POST /keys
 		// or delete the project via CLI.
-		s.logger.Printf("admin: issue first key for %s: %v", project.Slug, err)
+		s.logger.Error("admin: issue first key", "slug", project.Slug, "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "issue key")
 		return
 	}
@@ -245,7 +245,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	all, err := s.projects.List(r.Context(), true)
 	if err != nil {
-		s.logger.Printf("admin: list projects: %v", err)
+		s.logger.Error("admin: list projects", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -311,7 +311,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "project not found")
 			return
 		}
-		s.logger.Printf("admin: update project: %v", err)
+		s.logger.Error("admin: update project", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -334,7 +334,7 @@ func (s *Server) handleArchiveProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "project not found")
 			return
 		}
-		s.logger.Printf("admin: archive: %v", err)
+		s.logger.Error("admin: archive", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -362,7 +362,7 @@ func (s *Server) handleUnarchiveProject(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "project not found")
 			return
 		}
-		s.logger.Printf("admin: unarchive: %v", err)
+		s.logger.Error("admin: unarchive", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -396,7 +396,7 @@ func (s *Server) handleIssueKey(w http.ResponseWriter, r *http.Request) {
 
 	key, err := s.issueKeyForProject(r, project.ID, req.Label)
 	if err != nil {
-		s.logger.Printf("admin: issue key: %v", err)
+		s.logger.Error("admin: issue key", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "issue key")
 		return
 	}
@@ -413,7 +413,7 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	keys, err := s.keys.ListByProject(r.Context(), project.ID, true)
 	if err != nil {
-		s.logger.Printf("admin: list keys: %v", err)
+		s.logger.Error("admin: list keys", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -448,7 +448,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.logger.Printf("admin: revoke lookup: %v", err)
+		s.logger.Error("admin: revoke lookup", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -466,7 +466,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		s.logger.Printf("admin: revoke: %v", err)
+		s.logger.Error("admin: revoke", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}

@@ -38,7 +38,7 @@ func (s *Server) resolveProjectFromQuery(w http.ResponseWriter, r *http.Request)
 		return nil, false
 	}
 	if err != nil {
-		s.logger.Printf("project lookup: %v", err)
+		s.logger.Error("project lookup", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return nil, false
 	}
@@ -62,7 +62,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	items, total, err := s.store.Query(r.Context(), project.ID, filter)
 	if err != nil {
-		s.logger.Printf("query: %v", err)
+		s.logger.Error("query", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -96,7 +96,7 @@ func (s *Server) handleGetByID(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	if err != nil {
-		s.logger.Printf("get: %v", err)
+		s.logger.Error("get", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -114,7 +114,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	}
 	srcs, err := s.store.Sources(r.Context(), project.ID)
 	if err != nil {
-		s.logger.Printf("sources: %v", err)
+		s.logger.Error("sources", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -155,7 +155,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats, err := s.store.Stats(r.Context(), project.ID, filter, bucket)
 	if err != nil {
-		s.logger.Printf("stats: %v", err)
+		s.logger.Error("stats", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}

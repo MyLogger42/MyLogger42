@@ -9,7 +9,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,17 +42,30 @@ func main() {
 		return
 	}
 
-	logger := log.New(os.Stdout, "mylogger42 ", log.LstdFlags|log.Lmsgprefix)
-
 	cfg, err := loadConfig()
 	if err != nil {
-		logger.Fatalf("config: %v", err)
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("config error", "err", err)
+		os.Exit(1)
 	}
+
+	logger, err := newLogger(cfg.LogLevel, cfg.LogFormat, os.Stdout)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("logger config error", "err", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
+	stdLogger := slog.NewLogLogger(logger.Handler(), slog.LevelInfo)
 
 	rootCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	logger.Printf("starting mylogger42 (driver=%s, port=%d, retention=%dd)", cfg.DBDriver, cfg.HTTPPort, cfg.RetentionDays)
+	logger.Info("starting mylogger42",
+		"driver", cfg.DBDriver,
+		"port", cfg.HTTPPort,
+		"retention_days", cfg.RetentionDays,
+		"log_level", cfg.LogLevel,
+		"log_format", cfg.LogFormat,
+	)
 
 	openCtx, openCancel := context.WithTimeout(rootCtx, 10*time.Second)
 	stores, err := store.OpenStores(openCtx, store.OpenConfig{
@@ -61,11 +75,12 @@ func main() {
 	})
 	openCancel()
 	if err != nil {
-		logger.Fatalf("storage: %v", err)
+		logger.Error("storage open failed", "err", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := stores.Logs.Close(); err != nil {
-			logger.Printf("storage close: %v", err)
+			logger.Error("storage close failed", "err", err)
 		}
 	}()
 
@@ -75,26 +90,29 @@ func main() {
 	pingCtx, pingCancel := context.WithTimeout(rootCtx, 5*time.Second)
 	if err := stores.Logs.Ping(pingCtx); err != nil {
 		pingCancel()
-		logger.Fatalf("storage unreachable: %v", err)
+		logger.Error("storage unreachable", "err", err)
+		os.Exit(1)
 	}
 	pingCancel()
 
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(rootCtx, 5*time.Second)
 	if err := bootstrapAdminUser(bootstrapCtx, stores.Users, cfg, logger); err != nil {
-		logger.Fatalf("bootstrap admin: %v", err)
+		bootstrapCancel()
+		logger.Error("bootstrap admin failed", "err", err)
+		os.Exit(1)
 	}
 	bootstrapCancel()
 
 	var wg sync.WaitGroup
 
-	hub := ws.NewHub(logger)
+	hub := ws.NewHub(stdLogger)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		hub.Run(rootCtx)
 	}()
 
-	worker := retention.New(stores.Logs, stores.Projects, cfg.RetentionDays, logger)
+	worker := retention.New(stores.Logs, stores.Projects, cfg.RetentionDays, stdLogger)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -105,7 +123,7 @@ func main() {
 	if err != nil {
 		// Not fatal — the server still serves the API. We just log so
 		// operators know the SPA isn't being served from this binary.
-		logger.Printf("static assets unavailable: %v", err)
+		logger.Warn("static assets unavailable", "err", err)
 	}
 
 	srv := api.NewServer(api.Config{
@@ -121,7 +139,6 @@ func main() {
 		Signer:              auth.NewSessionSigner(cfg.SessionSecret),
 		CookieSecure:        api.CookieSecureResolver(cfg.TrustForwardedProto),
 		TrustForwardedProto: cfg.TrustForwardedProto,
-		LogLevel:            cfg.LogLevel,
 	})
 
 	// Drains the in-memory last_used_at updates accumulated by ingest
@@ -151,14 +168,15 @@ func main() {
 	}
 
 	go func() {
-		logger.Printf("http listening on %s", httpServer.Addr)
+		logger.Info("http listening", "addr", httpServer.Addr)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Fatalf("http: %v", err)
+			logger.Error("http server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-rootCtx.Done()
-	logger.Printf("shutdown signal received")
+	logger.Info("shutdown signal received")
 
 	gracefulShutdown(httpServer, &wg, logger)
 }
@@ -166,11 +184,11 @@ func main() {
 // gracefulShutdown drains in-flight HTTP requests and waits for all
 // background workers tracked by wg to exit before main returns and closes
 // storage in defer.
-func gracefulShutdown(httpServer *http.Server, wg *sync.WaitGroup, logger *log.Logger) {
+func gracefulShutdown(httpServer *http.Server, wg *sync.WaitGroup, logger *slog.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Printf("http shutdown: %v", err)
+		logger.Error("http shutdown failed", "err", err)
 	}
 	wg.Wait()
 }
@@ -194,6 +212,7 @@ type config struct {
 	RetentionDays       int
 	HTTPPort            int
 	LogLevel            string
+	LogFormat           string
 	KeyPepper           []byte
 	SessionSecret       []byte
 	AdminUsername       string
@@ -208,7 +227,15 @@ func loadConfig() (config, error) {
 		VLogsURL:      getEnv("VLOGS_URL", "http://localhost:9428"),
 		HTTPPort:      8080,
 		RetentionDays: 30,
-		LogLevel:      strings.ToLower(getEnv("LOG_LEVEL", "info")),
+		LogLevel:      strings.ToLower(strings.TrimSpace(getEnv("LOG_LEVEL", "info"))),
+		LogFormat:     strings.ToLower(strings.TrimSpace(getEnv("LOG_FORMAT", "text"))),
+	}
+
+	if _, err := parseLogLevel(cfg.LogLevel); err != nil {
+		return cfg, err
+	}
+	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
+		return cfg, fmt.Errorf("LOG_FORMAT must be text or json (got %q)", cfg.LogFormat)
 	}
 
 	pepper, err := decodeHexSecret("KEY_PEPPER")
@@ -291,7 +318,38 @@ func parseBool(s string) bool {
 // We only validate that the password hash starts with `$2` (the bcrypt
 // magic prefix). A wrong-but-bcrypt-shaped hash will fail at login time
 // and produce an actionable error.
-func bootstrapAdminUser(ctx context.Context, users store.UserStore, cfg config, logger *log.Logger) error {
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("LOG_LEVEL must be one of debug, info, warn, error (got %q)", raw)
+	}
+}
+
+func newLogger(levelStr, formatStr string, w io.Writer) (*slog.Logger, error) {
+	level, err := parseLogLevel(levelStr)
+	if err != nil {
+		return nil, err
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	switch strings.ToLower(strings.TrimSpace(formatStr)) {
+	case "", "text":
+		return slog.New(slog.NewTextHandler(w, opts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, opts)), nil
+	default:
+		return nil, fmt.Errorf("LOG_FORMAT must be text or json (got %q)", formatStr)
+	}
+}
+
+func bootstrapAdminUser(ctx context.Context, users store.UserStore, cfg config, logger *slog.Logger) error {
 	count, err := users.Count(ctx)
 	if err != nil {
 		return fmt.Errorf("count users: %w", err)
@@ -302,9 +360,7 @@ func bootstrapAdminUser(ctx context.Context, users store.UserStore, cfg config, 
 		return nil
 	}
 	if cfg.AdminUsername == "" || cfg.AdminPasswordHash == "" {
-		logger.Printf("admin: no admin user configured (set ADMIN_USERNAME and " +
-			"ADMIN_PASSWORD_HASH for first-start bootstrap, or run " +
-			"`mylogger42 admin create-user`); UI will be unusable until then")
+		logger.Warn("no admin user configured; UI will be unusable until `mylogger42 admin create-user` is run")
 		return nil
 	}
 	if !strings.HasPrefix(cfg.AdminPasswordHash, "$2") {
@@ -328,7 +384,7 @@ func bootstrapAdminUser(ctx context.Context, users store.UserStore, cfg config, 
 	if err := users.Create(ctx, user); err != nil {
 		return fmt.Errorf("create admin: %w", err)
 	}
-	logger.Printf("admin: bootstrapped user %q from env vars", cfg.AdminUsername)
+	logger.Info("bootstrapped admin user from env vars", "username", cfg.AdminUsername)
 	return nil
 }
 

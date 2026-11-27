@@ -53,7 +53,7 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.Insert(r.Context(), entry); err != nil {
-		s.logger.Printf("ingest: insert failed: %v", err)
+		s.logger.Error("ingest: insert failed", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}
@@ -131,7 +131,7 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.InsertBatch(r.Context(), entries); err != nil {
-		s.logger.Printf("ingest: batch insert failed: %v", err)
+		s.logger.Error("ingest: batch insert failed", "err", err, "request_id", RequestIDFromContext(r.Context()))
 		writeError(w, http.StatusInternalServerError, "storage error")
 		return
 	}

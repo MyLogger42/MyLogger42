@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mylogger42/mylogger42/internal/auth"
 	"github.com/mylogger42/mylogger42/internal/domain"
 	"github.com/mylogger42/mylogger42/internal/store"
@@ -27,7 +29,15 @@ const (
 	ctxKeyProject ctxKey = iota
 	ctxKeyKeyID
 	ctxKeySession
+	ctxKeyRequestID
 )
+
+// RequestIDFromContext returns the request ID stamped onto the request by
+// withRequestID. Empty string if not set.
+func RequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(ctxKeyRequestID).(string)
+	return id
+}
 
 // ProjectFromContext returns the Project stamped onto the request by
 // requireProjectKey. Returns nil and false on a request that didn't go
@@ -504,35 +514,84 @@ func withCORSCredentials(next http.Handler) http.Handler {
 	})
 }
 
-// --- access logging ---------------------------------------------------
+// --- request ID & access logging --------------------------------------
 
-// withLogging emits a one-line access log per request. We deliberately
-// don't pull in a structured logger — the server's own observability is
-// minimal in v1.
-func withLogging(logger interface {
-	Printf(format string, v ...any)
-}, next http.Handler) http.Handler {
+const requestIDHeader = "X-Request-Id"
+
+// withRequestID propagates a valid incoming X-Request-Id header or
+// generates a fresh UUID, stores it in the request context, and sets
+// X-Request-Id on the response.
+func withRequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := sanitizeRequestID(r.Header.Get(requestIDHeader))
+		if id == "" {
+			id = uuid.NewString()
+		}
+		w.Header().Set(requestIDHeader, id)
+		ctx := context.WithValue(r.Context(), ctxKeyRequestID, id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func sanitizeRequestID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if id == "" || len(id) > 128 {
+		return ""
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x20 || id[i] == 0x7f {
+			return ""
+		}
+	}
+	return id
+}
+
+// withLogging emits one structured slog access log per request. Level
+// filtering (debug/info/warn/error) is handled by the logger's handler.
+func withLogging(logger *slog.Logger, trustProxy bool, next http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rr := &recordingWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rr, r)
-		logger.Printf("http %s %s -> %d (%s)", r.Method, r.URL.Path, rr.status, time.Since(start))
+		logger.LogAttrs(r.Context(), slog.LevelInfo, "http request",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", rr.status),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+			slog.Int("bytes_written", rr.bytesWritten),
+			slog.String("remote_ip", clientIP(r, trustProxy)),
+			slog.String("request_id", RequestIDFromContext(r.Context())),
+		)
 	})
 }
 
-// recordingWriter captures the response status for the access log. It
-// transparently passes through Hijack so the WebSocket upgrade on
-// /api/v1/logs/stream can take over the underlying TCP connection — the
-// stdlib's default ResponseWriter is a Hijacker but interface-wrapping
-// hides it, so we forward explicitly.
+// recordingWriter captures the response status and bytes written for the
+// access log. It transparently passes through Hijack so the WebSocket
+// upgrade on /api/v1/logs/stream can take over the underlying TCP
+// connection — the stdlib's default ResponseWriter is a Hijacker but
+// interface-wrapping hides it, so we forward explicitly.
 type recordingWriter struct {
 	http.ResponseWriter
-	status int
+	status       int
+	bytesWritten int
 }
 
 func (r *recordingWriter) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(p)
+	r.bytesWritten += n
+	return n, err
+}
+
+func (r *recordingWriter) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func (r *recordingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
