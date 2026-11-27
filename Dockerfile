@@ -8,9 +8,9 @@
 FROM node:20-alpine AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
-# package-lock may not exist on first build; the wildcard above means
-# the COPY won't fail. npm install handles either case.
-RUN npm install
+# Use npm ci for reproducible builds when package-lock.json is present;
+# fall back to npm install only if the lockfile is missing.
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY web/ ./
 RUN npm run build
 
@@ -44,4 +44,6 @@ ENV DB_DSN=/app/data/mylogger42.db \
     HTTP_PORT=8080
 EXPOSE 8080
 VOLUME ["/app/data"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null "http://localhost:${HTTP_PORT:-8080}/api/v1/health" || exit 1
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
