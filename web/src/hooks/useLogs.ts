@@ -27,6 +27,8 @@ interface UseLogsReturn extends UseLogsState {
 // hitting "Next" with the same filters advances the page without a
 // caller-side controller.
 export function useLogs(query: LogsQuery): UseLogsReturn {
+  const isControlledOffset = query.offset !== undefined;
+  const filterKey = JSON.stringify({ ...query, offset: undefined });
   const queryKey = JSON.stringify(query);
 
   const [state, setState] = useState<UseLogsState>({
@@ -44,15 +46,21 @@ export function useLogs(query: LogsQuery): UseLogsReturn {
     setState((s) => ({ ...s, offset }));
   }, []);
 
-  // Reset offset to 0 whenever the (non-offset) query shape changes.
+  // In uncontrolled mode (caller omits `offset`), reset offset to 0 whenever
+  // the filter shape changes. When `offset` is controlled via URL params,
+  // the caller owns resets.
   useEffect(() => {
-    setState((s) => ({ ...s, offset: 0 }));
-  }, [queryKey]);
+    if (!isControlledOffset) {
+      setState((s) => ({ ...s, offset: 0 }));
+    }
+  }, [filterKey, isControlledOffset]);
+
+  const effectiveOffset = isControlledOffset ? query.offset! : state.offset;
 
   useEffect(() => {
     let cancelled = false;
     setState((s) => ({ ...s, loading: true, error: null }));
-    fetchLogs({ ...query, offset: state.offset })
+    fetchLogs({ ...query, offset: effectiveOffset })
       .then((res) => {
         if (cancelled) return;
         setState((s) => ({
@@ -79,7 +87,7 @@ export function useLogs(query: LogsQuery): UseLogsReturn {
     // We intentionally serialise the query into the dep list so
     // structurally identical objects don't cause refetches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryKey, state.offset, tick]);
+  }, [queryKey, effectiveOffset, tick]);
 
   return { ...state, reload, setOffset };
 }

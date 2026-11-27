@@ -14,10 +14,28 @@ export interface FilterValues {
   levels: LogLevel[];
 }
 
+export const EMPTY_FILTER: FilterValues = {
+  service: '',
+  level: '',
+  search: '',
+  from: '',
+  to: '',
+  levels: [],
+};
+
+const TIME_PRESETS: { label: string; ms: number }[] = [
+  { label: '15m', ms: 15 * 60 * 1000 },
+  { label: '1h', ms: 60 * 60 * 1000 },
+  { label: '6h', ms: 6 * 60 * 60 * 1000 },
+  { label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { label: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
 interface Props {
   sources: Source[];
   initial: FilterValues;
   multiLevel?: boolean;
+  timePresets?: boolean;
   onChange: (next: FilterValues) => void;
   busy?: boolean;
 }
@@ -26,7 +44,14 @@ interface Props {
 // history page uses a single-select level dropdown (server contract is
 // one level), the live-tail page uses a multi-select via the `levels`
 // array (the LiveTailFilter accepts a list).
-export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Props) {
+export function FilterBar({
+  sources,
+  initial,
+  multiLevel,
+  timePresets,
+  onChange,
+  busy,
+}: Props) {
   const [v, setV] = useState<FilterValues>(initial);
   // Track the last filter snapshot synced from `initial` or emitted via
   // `onChange` so neither initial mount nor parent-driven resets re-emit.
@@ -34,7 +59,8 @@ export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Prop
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // Reset local state when the parent swaps the initial value out.
+  // Sync local state when the parent swaps `initial` (URL navigation,
+  // histogram click, chip toggle, etc.) without re-emitting onChange.
   useEffect(() => {
     lastSyncedRef.current = JSON.stringify(initial);
     setV(initial);
@@ -53,6 +79,17 @@ export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vKey]);
 
+  function applyImmediate(next: FilterValues) {
+    lastSyncedRef.current = JSON.stringify(next);
+    setV(next);
+    onChangeRef.current(next);
+  }
+
+  function applyPreset(ms: number) {
+    const from = rfc3339ToLocal(new Date(Date.now() - ms));
+    applyImmediate({ ...v, from, to: '' });
+  }
+
   function toggleLevel(level: LogLevel) {
     setV((prev) => ({
       ...prev,
@@ -61,6 +98,10 @@ export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Prop
         : [...prev.levels, level],
     }));
   }
+
+  const hasActiveFilters = Boolean(
+    v.service || v.level || v.search || v.from || v.to || v.levels.length > 0,
+  );
 
   return (
     <div className="filter-bar">
@@ -140,7 +181,37 @@ export function FilterBar({ sources, initial, multiLevel, onChange, busy }: Prop
         />
       </label>
 
-      {busy ? <span className="filter-busy">Loading...</span> : null}
+      <div className="filter-actions">
+        {timePresets ? (
+          <div className="filter-presets" role="group" aria-label="Quick time range">
+            <span className="filter-presets-label">Range</span>
+            {TIME_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className="preset-btn"
+                onClick={() => applyPreset(preset.ms)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span />
+        )}
+
+        <div className="filter-actions-right">
+          {busy ? <span className="filter-busy">Loading...</span> : null}
+          <button
+            type="button"
+            className="filter-clear-btn"
+            disabled={!hasActiveFilters}
+            onClick={() => applyImmediate(EMPTY_FILTER)}
+          >
+            Clear filters
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
